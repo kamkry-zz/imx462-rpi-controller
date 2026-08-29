@@ -1,0 +1,100 @@
+name: SonarQube
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: sonarqube-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  sonar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Guard - is Sonar configured?
+        id: guard
+        run: |
+          if [ -n "${{ secrets.SONAR_TOKEN }}" ] && [ -n "${{ secrets.SONAR_HOST_URL }}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "SonarQube secrets not set; skipping."
+          fi
+
+      - name: Prepare Sonar pull-request arguments
+        id: sonar_prepare
+        if: steps.guard.outputs.enabled == 'true'
+        run: |
+          echo "prargs=" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "prargs=-Dsonar.pullrequest.provider=github -Dsonar.pullrequest.key=${{ github.event.pull_request.number }} -Dsonar.pullrequest.branch=${{ github.event.pull_request.head.ref }} -Dsonar.pullrequest.base=${{ github.event.pull_request.base.ref }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: SonarQube Scan
+        id: scan
+        if: steps.guard.outputs.enabled == 'true'
+        continue-on-error: true
+        uses: SonarSource/sonarqube-scan-action@v7
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          args: >
+            ${{ steps.sonar_prepare.outputs.prargs }}
+
+      - name: Read Sonar quality gate status
+        id: gate
+        if: steps.guard.outputs.enabled == 'true' && steps.scan.outcome == 'success'
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        run: |
+          set -euo pipefail
+          host="${SONAR_HOST_URL%/}"
+          report_task=".scannerwork/report-task.txt"
+          analysis_id=""
+
+          if [ -f "$report_task" ]; then
+            ce_task_id=$(grep '^ceTaskId=' "$report_task" | cut -d'=' -f2- || true)
+            if [ -n "$ce_task_id" ]; then
+              for _ in $(seq 1 30); do
+                ce_json=$(curl -sS -u "${SONAR_TOKEN}:" "${host}/api/ce/task?id=${ce_task_id}" || echo '{}')
+                ce_status=$(echo "$ce_json" | jq -r '.task.status // "UNKNOWN"')
+                if [ "$ce_status" = "SUCCESS" ]; then
+                  analysis_id=$(echo "$ce_json" | jq -r '.task.analysisId // ""')
+                  break
+                fi
+                if [ "$ce_status" = "FAILED" ] || [ "$ce_status" = "CANCELED" ]; then
+                  echo "status=ERROR" >> "$GITHUB_OUTPUT"
+                  exit 0
+                fi
+                sleep 5
+              done
+            fi
+          fi
+
+          if [ -n "$analysis_id" ]; then
+            gate=$(curl -sS -u "${SONAR_TOKEN}:" "${host}/api/qualitygates/project_status?analysisId=${analysis_id}" || echo '{}')
+          else
+            gate=$(curl -sS -u "${SONAR_TOKEN}:" "${host}/api/qualitygates/project_status?projectKey=imx462-rpi-controller" || echo '{}')
+          fi
+
+          status=$(echo "$gate" | jq -r '.projectStatus.status // "UNKNOWN"')
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          echo "analysis_id=${analysis_id}" >> "$GITHUB_OUTPUT"
+
+      - name: Enforce Sonar quality gate
+        if: steps.guard.outputs.enabled == 'true' && steps.scan.outcome == 'success' && steps.gate.outputs.status == 'ERROR'
+        run: |
+          echo "SonarQube quality gate failed."
+          exit 1
