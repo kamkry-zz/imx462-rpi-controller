@@ -56,7 +56,7 @@ jobs:
         run: python scripts/ci_summary.py --junit-dir junit --output summary.md
       - name: Comment test results on PR
         if: always() && github.event_name == 'pull_request' && steps.summary.outcome == 'success'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
