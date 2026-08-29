@@ -1,0 +1,6 @@
+---
+- name: Restart imx462-controller
+  systemd:
+    name: imx462-controller
+    state: restarted
+    daemon_reload: true

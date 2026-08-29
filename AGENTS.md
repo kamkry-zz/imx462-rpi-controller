@@ -1,0 +1,113 @@
+# AGENTS.md
+
+Directives for OpenCode sessions in this repo. OpenSpec (`openspec/`) is the source
+of truth for planning; `openspec/project.md` holds the full stack/domain context.
+
+## Hardware (hard-won — do not re-derive)
+- The Inno Maker IMX462 is driven via the **`imx290`** overlay, not `imx462`:
+  `dtoverlay=imx290,clock-frequency=74250000,cam0` (add `cam1` for the second camera).
+  Append to `/boot/firmware/config.txt` on Pi 5 (`/boot/config.txt` on legacy), then
+  `sudo reboot`. Verify with `rpicam-hello --list-cameras`.
+- Sensor modes: RAW10/RAW12 at `1280x720@60` and `1920x1080@60`.
+- Target: Raspberry Pi OS **Bookworm (Debian 12) / Trixie (Debian 13)** (libcamera +
+  Picamera2). Supports Pi 3/4/5. Bullseye/legacy `picamera` stack is out of scope.
+- Raspberry Pi OS ships no system `pip` (externally-managed env): run the app in a
+  venv created with `--system-site-packages` so the apt-installed `picamera2` is
+  importable. Newer images may not have a `pi` user — the default login user is
+  `user` (uid 1000); use it as the systemd service user.
+
+## Architecture constraints
+- Camera access is via **Picamera2** in a **single process**, one instance per camera
+  in its own thread (blocking capture releases the GIL). Never share one camera
+  across processes.
+- **REST-first**: every operation is exposed via FastAPI (JSON). The web frontend is
+  a thin client only. SOAP/gRPC are rejected; MQTT is telemetry-only.
+- Live view = **MJPEG** (`multipart/x-mixed-replace`) now; WebRTC is a later
+  follow-up. Status/control push = WebSocket.
+- Per-camera Picamera2 stream layout: `main` (YUV420, full-res) for stills +
+  H.264 recording; `lores` (downscaled) for always-on MJPEG via the hardware
+  `MJPEGEncoder`. This keeps live view and recording/photo independent. Video
+  records raw H.264 then **remuxes to `.mp4`** via `ffmpeg`
+  (`/usr/bin/ffmpeg`, `-c copy`); falls back to `.h264` if ffmpeg is absent.
+- Live view uses a **persistent MJPEG encoder** + a feed thread that fans frames
+  out to per-client subscriber queues (the stream is never torn down on control
+  changes). `set_controls` applies at **runtime** (no reconfigure); only
+  `configure_mode` (mode change) and `set_flip` reconfigure (aborting the
+  in-flight frame).
+- MQTT (paho-mqtt) publishes operation events, heartbeat/status, and metrics to an
+  external broker.
+- OTel exports OTLP (metrics + traces + correlated logs) to the k3s observability
+  stack; the endpoint is configurable. NOTE: the cluster collector is
+  `otel-collector.observability.svc` (cluster-internal) — the external Pi needs a
+  reachable endpoint (Gateway/NodePort), not a `*.svc` name.
+
+## Camera controls & hardware limits (hard-won — do not re-derive)
+- **Native exposure range up to ~115 s** — the IMX290/IMX462 24-bit `VMAX`
+  register plus adjustable `HMAX` lets libcamera expose a single-frame exposure
+  of ~115 s (verified: `ExposureTime` control max ≈ 115686258 µs at 1080p). The
+  UI's 1–30 s shutter ladder is captured natively; no software stacking needed.
+- **`set_controls` changes lag ~10 in-flight frames** — libcamera applies runtime
+  control changes only after the buffered requests drain; at long exposures
+  (e.g. 30 s/frame) that is *minutes*, so `capture_snapshot` applies the exposure
+  via a **reconfigure** (`configure_mode` bakes controls into the config, applied
+  on the first frame). The UI's manual-exposure changes still use runtime
+  `set_controls` (fine at 60 fps, ~160 ms lag).
+- **ISO = gain × 100** (`AnalogueGain` 1.0–31.6 → ISO 100–3200). `AnalogueGain`
+  min is 1.0, so ISO < 100 (e.g. 50) is not achievable.
+- Shutter and ISO use **0.3 EV (1/3-stop) ladders**; an **anti-flicker** selector
+  (Off / 50 Hz / 60 Hz) filters the shutter list to mains-safe speeds (multiples
+  of 1/100 s for 50 Hz, 1/120 s for 60 Hz) AND sets the real
+  `AeFlickerPeriod` control (0 / 10000 / 8333 µs).
+- White balance: `AwbEnable` toggle + `ColourTemperature` (Kelvin). `ColourGains`
+  is ignored while AWB is on — always set `AwbEnable` alongside manual WB.
+- `ExposureTime` must be paired with `FrameDurationLimits = (max(shutter, 1/60s),
+  max(shutter, 1/60s))` so fast shutters keep 60 fps; reset to `(1/60s, 1/60s)`
+  when Auto Exposure is re-enabled.
+- **Single-frame capture mode** (`PUT /api/cameras/{id}/stream-mode`): switches
+  between continuous MJPEG live view and an at-rest single-shot mode (MJPEG
+  encoder torn down). `POST /api/cameras/{id}/snapshot` takes one still at the
+  requested exposure and saves it to the gallery. The UI auto-enters single-frame
+  mode when the selected shutter exceeds 2 s. **Entering continuous mode
+  reconfigures the camera** so any pending exposure change (e.g. leaving a long
+  single-frame exposure) applies immediately instead of lagging ~10 in-flight
+  frames; the UI resets to auto exposure when the single-frame button is
+  toggled off.
+- Vendor tuning file `innomakerpi5_imx290.json` is installed as
+  `/usr/share/libcamera/ipa/rpi/pisp/imx290.json` (original backed up to
+  `imx290.json.rpi-default`) to correct the IMX462 colour cast. The env var
+  `LIBCAMERA_RPI_TUNING_FILE` is NOT honored by this libcamera build.
+- Current settings (gain/exposure) are read back via `capture_metadata()` from a
+  background poll thread and surfaced in the WebSocket status payload (skipped
+  while recording). The read runs **outside** the camera lock (with a timeout) so
+  a stalled sensor can never freeze the feed thread or control operations.
+
+## Configuration & secrets
+- Non-secret values → `config.yaml`. Secrets → local `.env` (git-ignored).
+- Every configurable file must have a committed template/example
+  (`config.example.yaml`, `.env.example`, Ansible inventory/host_vars examples,
+  systemd unit template). Add a template whenever you add a config key.
+- Captured media lives in `capture.output_dir` (`/var/lib/imx462-controller/media`
+  by default) and is exposed via `/api/assets` (list / download / delete, with
+  filename+kind+size+modified metadata, traversal-safe).
+- For a fresh Pi, generate the local (git-ignored) Ansible inventory + host_vars
+  with `python3 scripts/configure.py` (interactive, masked secrets; JSON answers
+  file + `--yes` for scripting).
+- License: Apache-2.0 (see LICENSE). Never commit secrets, `config.yaml`,
+  `.env`, `ansible/inventory.ini`, or `ansible/host_vars/*` (except `*.example.yml`).
+
+## Commands
+- Setup configurator: `python3 scripts/configure.py`
+  (stdlib-only; writes git-ignored `ansible/inventory.ini` +
+  `ansible/host_vars/<hostname>.yml`; run on the deploy machine before Ansible).
+- Deploy: `ansible-playbook -i ansible/inventory.ini ansible/playbook.yml` (SSH by
+  IP, keys pre-exchanged). Inventory/host_vars are git-ignored; use the `*.example`
+  files as templates.
+- Frontend design: use the `ui-ux-pro-max` skill; run its search scripts with
+  `python3 .opencode/skills/ui-ux-pro-max/scripts/search.py ...` (see the skill).
+
+## Development workflow
+- All work is planned via OpenSpec (`spec-driven`): propose → specs → design → tasks,
+  then apply. Start changes with `/opsx-propose`, implement with `/opsx-apply`,
+  finalize with `/opsx-archive`.
+- The propose/apply/archive skills live in `.opencode/skills/`; commands in
+  `.opencode/commands/`.

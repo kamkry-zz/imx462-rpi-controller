@@ -1,0 +1,102 @@
+---
+# Installs dependencies, deploys the app, renders config/.env, installs systemd.
+
+- name: Install apt dependencies
+  apt:
+    name:
+      - python3-picamera2
+      - python3-venv
+      - prometheus-node-exporter
+    state: present
+    update_cache: true
+
+- name: Ensure node_exporter is enabled and running
+  systemd:
+    name: prometheus-node-exporter
+    enabled: true
+    state: started
+
+- name: Install vendor camera tuning file (replaces imx290.json for correct IMX462 colour)
+  block:
+    - name: Back up stock imx290 tuning file
+      copy:
+        src: /usr/share/libcamera/ipa/rpi/pisp/imx290.json
+        dest: /usr/share/libcamera/ipa/rpi/pisp/imx290.json.rpi-default
+        remote_src: true
+        mode: "0644"
+      failed_when: false
+    - name: Install vendor tuning file as imx290.json
+      copy:
+        src: innomakerpi5_imx290.json
+        dest: /usr/share/libcamera/ipa/rpi/pisp/imx290.json
+        mode: "0644"
+  notify: Restart imx462-controller
+
+- name: Create app and media directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ imx462_service_user }}"
+    mode: "0755"
+  loop:
+    - "{{ imx462_app_dir }}"
+    - "{{ imx462_media_dir }}"
+
+- name: Install k3s CA certificate for OTLP export (when configured)
+  copy:
+    src: k3s-ca.crt
+    dest: "{{ imx462_env.OTEL_EXPORTER_OTLP_CERTIFICATE }}"
+    mode: "0644"
+  when:
+    - imx462_env.OTEL_EXPORTER_OTLP_CERTIFICATE is defined
+    - imx462_env.OTEL_EXPORTER_OTLP_CERTIFICATE | length > 0
+
+- name: Create virtualenv with system site-packages
+  command:
+    cmd: "python3 -m venv --system-site-packages {{ imx462_venv }}"
+    creates: "{{ imx462_venv }}/bin/python"
+
+- name: Sync application source
+  copy:
+    src: "{{ playbook_dir }}/../src/"
+    dest: "{{ imx462_app_dir }}/src/"
+
+- name: Copy pyproject.toml
+  copy:
+    src: "{{ playbook_dir }}/../pyproject.toml"
+    dest: "{{ imx462_app_dir }}/pyproject.toml"
+
+- name: Install application package
+  command:
+    cmd: "{{ imx462_venv }}/bin/python -m pip install --no-cache-dir ."
+    chdir: "{{ imx462_app_dir }}"
+
+- name: Render config.yaml
+  copy:
+    content: "{{ imx462_config | to_nice_yaml }}"
+    dest: "{{ imx462_app_dir }}/config.yaml"
+    owner: "{{ imx462_service_user }}"
+    mode: "0644"
+
+- name: Render .env
+  copy:
+    content: |
+      {% for key, value in imx462_env.items() %}
+      {{ key }}={{ value }}
+      {% endfor %}
+    dest: "{{ imx462_app_dir }}/.env"
+    owner: "{{ imx462_service_user }}"
+    mode: "0600"
+
+- name: Install systemd unit
+  template:
+    src: imx462-controller.service.j2
+    dest: /etc/systemd/system/imx462-controller.service
+    mode: "0644"
+
+- name: Enable and start service
+  systemd:
+    name: imx462-controller
+    enabled: true
+    state: restarted
+    daemon_reload: true

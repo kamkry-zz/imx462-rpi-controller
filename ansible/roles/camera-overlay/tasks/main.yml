@@ -1,0 +1,25 @@
+---
+# Applies the imx290 dtoverlay for one or two IMX462 cameras.
+# NOTE: the IMX462 is driven via the imx290 overlay, not imx462.
+
+- name: Check for firmware config.txt
+  stat:
+    path: /boot/firmware/config.txt
+  register: firmware_stat
+
+- name: Determine firmware config path
+  set_fact:
+    firmware_config: "{{ '/boot/firmware/config.txt' if firmware_stat.stat.exists else '/boot/config.txt' }}"
+
+- name: Ensure imx290 overlay for cam0
+  lineinfile:
+    path: "{{ firmware_config }}"
+    line: "dtoverlay=imx290,clock-frequency=74250000,cam0"
+    state: present
+
+- name: Ensure imx290 overlay for cam1 (when two cameras)
+  lineinfile:
+    path: "{{ firmware_config }}"
+    line: "dtoverlay=imx290,clock-frequency=74250000,cam1"
+    state: present
+  when: camera_count | default(1) | int >= 2

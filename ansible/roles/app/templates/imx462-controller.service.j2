@@ -1,0 +1,16 @@
+[Unit]
+Description=IMX462 RPi Camera Controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ imx462_service_user }}
+WorkingDirectory={{ imx462_app_dir }}
+ExecStart={{ imx462_venv }}/bin/imx462-controller
+Restart=on-failure
+RestartSec=5
+EnvironmentFile={{ imx462_app_dir }}/.env
+
+[Install]
+WantedBy=multi-user.target

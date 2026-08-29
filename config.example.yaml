@@ -1,0 +1,43 @@
+# IMX462 RPi Controller configuration (non-secret values).
+# Copy to `config.yaml` and edit. Secrets belong in `.env` (see `.env.example`).
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+# One or two cameras (cam0 / cam1).
+# Each maps a logical name to a libcamera camera index.
+cameras:
+  - id: 0
+    name: "cam0"
+  - id: 1
+    name: "cam1"
+
+default_mode:
+  width: 1920
+  height: 1080
+  bit_depth: 12          # RAW10 or RAW12
+  framerate: 60
+
+capture:
+  output_dir: "/var/lib/imx462-controller/media"
+  photo_format: "jpg"
+  video_format: "mp4"
+
+mqtt:
+  # Host/port/credentials come from .env (secrets).
+  topics:
+    events: "imx462/events"
+    status: "imx462/status"
+    metrics: "imx462/metrics"
+  heartbeat_interval_seconds: 30
+
+otel:
+  # endpoint and service name are non-secret; tokens (if any) live in .env.
+  # Private CA for https endpoints: set OTEL_EXPORTER_OTLP_CERTIFICATE in .env.
+  endpoint: "http://otel.example:4318"
+  service_name: "imx462-rpi-controller"
+  metric_export_interval_ms: 30000
+
+logging:
+  level: "INFO"
