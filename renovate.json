@@ -9,6 +9,12 @@
       "matchManagers": ["pep621"],
       "matchPackageNames": ["opentelemetry-distro", "opentelemetry-instrumentation-fastapi"],
       "groupName": "opentelemetry"
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "matchDatasources": ["github-tags"],
+      "matchPackageNames": ["python"],
+      "enabled": false
     }
   ]
 }
