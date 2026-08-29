@@ -20,6 +20,16 @@ router = APIRouter(prefix="/api", tags=["camera"])
 
 _PHOTO_KINDS = {"jpg", "jpeg", "png"}
 
+_CAMERA_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+    404: {"description": "Camera not found"},
+    409: {"description": "Operation rejected (camera busy or invalid state)"},
+}
+
+_ASSET_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+    400: {"description": "Invalid filename"},
+    404: {"description": "Asset not found"},
+}
+
 
 class ModeRequest(BaseModel):
     width: int
@@ -80,7 +90,7 @@ def list_cameras(request: Request):
     }
 
 
-@router.get("/cameras/{camera_id}/status")
+@router.get("/cameras/{camera_id}/status", responses=_CAMERA_ERROR_RESPONSES)
 def camera_status(camera_id: int, request: Request):
     manager = _manager(request)
     try:
@@ -95,7 +105,7 @@ def camera_status(camera_id: int, request: Request):
     }
 
 
-@router.put("/cameras/{camera_id}/mode")
+@router.put("/cameras/{camera_id}/mode", responses=_CAMERA_ERROR_RESPONSES)
 def set_mode(camera_id: int, body: ModeRequest, request: Request):
     manager = _manager(request)
     _mqtt(request).publish_event("configure", camera_id=camera_id, mode=body.model_dump())
@@ -108,7 +118,7 @@ def set_mode(camera_id: int, body: ModeRequest, request: Request):
     return {"ok": True, "camera_id": camera_id, "mode": body.model_dump()}
 
 
-@router.put("/cameras/{camera_id}/controls")
+@router.put("/cameras/{camera_id}/controls", responses=_CAMERA_ERROR_RESPONSES)
 def set_controls(camera_id: int, body: ControlsRequest, request: Request):
     manager = _manager(request)
     try:
@@ -121,7 +131,7 @@ def set_controls(camera_id: int, body: ControlsRequest, request: Request):
     return {"ok": True, "camera_id": camera_id, "controls": body.controls}
 
 
-@router.put("/cameras/{camera_id}/flip")
+@router.put("/cameras/{camera_id}/flip", responses=_CAMERA_ERROR_RESPONSES)
 def set_flip(camera_id: int, body: FlipRequest, request: Request):
     manager = _manager(request)
     try:
@@ -134,7 +144,7 @@ def set_flip(camera_id: int, body: FlipRequest, request: Request):
     return {"ok": True, "camera_id": camera_id, "hflip": body.hflip, "vflip": body.vflip}
 
 
-@router.put("/cameras/{camera_id}/stream-mode")
+@router.put("/cameras/{camera_id}/stream-mode", responses=_CAMERA_ERROR_RESPONSES)
 def set_stream_mode(camera_id: int, body: StreamModeRequest, request: Request):
     manager = _manager(request)
     try:
@@ -146,7 +156,7 @@ def set_stream_mode(camera_id: int, body: StreamModeRequest, request: Request):
     return {"ok": True, "camera_id": camera_id, "mode": body.mode}
 
 
-@router.post("/cameras/{camera_id}/snapshot")
+@router.post("/cameras/{camera_id}/snapshot", responses=_CAMERA_ERROR_RESPONSES)
 def capture_snapshot(camera_id: int, body: SnapshotRequest, request: Request):
     manager = _manager(request)
     try:
@@ -164,7 +174,7 @@ def capture_snapshot(camera_id: int, body: SnapshotRequest, request: Request):
     }
 
 
-@router.post("/cameras/{camera_id}/photo")
+@router.post("/cameras/{camera_id}/photo", responses=_CAMERA_ERROR_RESPONSES)
 def capture_photo(camera_id: int, request: Request):
     manager = _manager(request)
     try:
@@ -182,7 +192,7 @@ def capture_photo(camera_id: int, request: Request):
     }
 
 
-@router.post("/cameras/{camera_id}/recording/start")
+@router.post("/cameras/{camera_id}/recording/start", responses=_CAMERA_ERROR_RESPONSES)
 def start_recording(camera_id: int, request: Request):
     manager = _manager(request)
     try:
@@ -195,7 +205,7 @@ def start_recording(camera_id: int, request: Request):
     return {"ok": True, "camera_id": camera_id, "recording": True}
 
 
-@router.post("/cameras/{camera_id}/recording/stop")
+@router.post("/cameras/{camera_id}/recording/stop", responses=_CAMERA_ERROR_RESPONSES)
 def stop_recording(camera_id: int, request: Request):
     manager = _manager(request)
     try:
@@ -212,7 +222,7 @@ def stop_recording(camera_id: int, request: Request):
     }
 
 
-@router.get("/cameras/{camera_id}/stream")
+@router.get("/cameras/{camera_id}/stream", responses=_CAMERA_ERROR_RESPONSES)
 async def stream(camera_id: int, request: Request):
     manager = _manager(request)
     try:
@@ -269,7 +279,7 @@ def _resolve_asset(request: Request, filename: str) -> Path:
     return path
 
 
-@router.get("/assets/{filename}")
+@router.get("/assets/{filename}", responses=_ASSET_ERROR_RESPONSES)
 def download_asset(filename: str, request: Request):
     path = _resolve_asset(request, filename)
     media_type = (
@@ -285,7 +295,7 @@ def download_asset(filename: str, request: Request):
     )
 
 
-@router.delete("/assets/{filename}")
+@router.delete("/assets/{filename}", responses=_ASSET_ERROR_RESPONSES)
 def delete_asset(filename: str, request: Request):
     path = _resolve_asset(request, filename)
     path.unlink()
