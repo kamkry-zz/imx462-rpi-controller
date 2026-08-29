@@ -105,6 +105,8 @@ jobs:
           val() { echo "$measures" | jq -r --arg k "$1" '(.component.measures[]? | select(.metric==$k) | .value) // "—"'; }
 
           {
+            echo "<!-- ci-sonar-results -->"
+            echo
             echo "### 🧭 SonarQube"
             echo
             echo "**Quality Gate:** ${gate_emoji}"
