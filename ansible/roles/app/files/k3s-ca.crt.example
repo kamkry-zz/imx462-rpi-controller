@@ -1,0 +1,8 @@
+# Placeholder for the cluster CA certificate (PEM) that signs the https://otel.k3s
+# OTLP endpoint certificate. Copy the real exported CA here and rename to
+# k3s-ca.crt (git-ignored, deploy-machine-local):
+#
+#   kubectl -n cert-manager get secret root-secret -o jsonpath='{.data.ca\.crt}' | base64 -d > ansible/roles/app/files/k3s-ca.crt
+#
+# The app role installs it to the path configured in
+# OTEL_EXPORTER_OTLP_CERTIFICATE (see ansible/host_vars).

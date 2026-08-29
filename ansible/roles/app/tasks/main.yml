@@ -35,6 +35,15 @@
     - "{{ imx462_app_dir }}"
     - "{{ imx462_media_dir }}"
 
+- name: Install k3s CA certificate for OTLP export (when configured)
+  copy:
+    src: k3s-ca.crt
+    dest: "{{ imx462_env.OTEL_EXPORTER_OTLP_CERTIFICATE }}"
+    mode: "0644"
+  when:
+    - imx462_env.OTEL_EXPORTER_OTLP_CERTIFICATE is defined
+    - imx462_env.OTEL_EXPORTER_OTLP_CERTIFICATE | length > 0
+
 - name: Create virtualenv with system site-packages
   command:
     cmd: "python3 -m venv --system-site-packages {{ imx462_venv }}"

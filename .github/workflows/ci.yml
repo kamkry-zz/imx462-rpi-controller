@@ -10,6 +10,12 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  actions: write
+  checks: write
+  pull-requests: write
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -24,9 +30,33 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install dependencies
-        run: pip install ".[dev]"
+        run: pip install ".[dev]" pytest-github-actions-annotate-failures
       - name: Run tests
-        run: python -m pytest -q
+        run: python -m pytest -q --junitxml=junit/test-${{ matrix.python-version }}.xml
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-${{ matrix.python-version }}
+          path: junit/
+
+  report:
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: junit
+          pattern: junit-*
+          merge-multiple: true
+      - name: Publish test report to PR
+        uses: dorny/test-reporter@v1
+        with:
+          path: "junit/**/*.xml"
+          reporter: java-junit
+          comment-mode: always
+          fail-on-error: false
 
   lint:
     runs-on: ubuntu-latest

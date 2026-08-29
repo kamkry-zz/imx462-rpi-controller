@@ -34,6 +34,7 @@ mqtt:
 
 otel:
   # endpoint and service name are non-secret; tokens (if any) live in .env.
+  # Private CA for https endpoints: set OTEL_EXPORTER_OTLP_CERTIFICATE in .env.
   endpoint: "http://otel.example:4318"
   service_name: "imx462-rpi-controller"
   metric_export_interval_ms: 30000

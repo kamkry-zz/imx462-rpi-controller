@@ -101,6 +101,7 @@ def default_answers() -> dict[str, Any]:
         "otel_endpoint": "",
         "otel_service_name": "imx462-rpi-controller",
         "otel_headers": "",
+        "otel_certificate": "",
     }
 
 
@@ -215,6 +216,10 @@ def collect_answers(answers_file: str | None) -> dict[str, Any]:
     a["otel_endpoint"] = _ask("OTLP endpoint (http://host:4318)", a["otel_endpoint"])
     a["otel_service_name"] = _ask("OTel service name", a["otel_service_name"])
     a["otel_headers"] = _ask("OTLP headers (e.g. 'Authorization=Bearer xxx')", a["otel_headers"])
+    a["otel_certificate"] = _ask(
+        "CA cert path on the Pi for the OTLP endpoint (blank = system CA)",
+        a["otel_certificate"],
+    )
 
     return a
 
@@ -268,6 +273,7 @@ def _host_vars_dict(answers: dict[str, Any]) -> dict[str, Any]:
             "MQTT_USERNAME": answers["mqtt_username"],
             "MQTT_PASSWORD": answers["mqtt_password"],
             "OTEL_EXPORTER_OTLP_HEADERS": answers["otel_headers"],
+            "OTEL_EXPORTER_OTLP_CERTIFICATE": answers["otel_certificate"],
         },
     }
 

@@ -34,6 +34,7 @@ imx462_config:
       metrics: "imx462/metrics"
     heartbeat_interval_seconds: 30
   otel:
+    # Cluster OTLP endpoint (private CA for https: see OTEL_EXPORTER_OTLP_CERTIFICATE).
     endpoint: "http://otel.example:4318"
     service_name: "imx462-rpi-controller"
 
@@ -44,3 +45,6 @@ imx462_env:
   MQTT_USERNAME: ""
   MQTT_PASSWORD: ""
   OTEL_EXPORTER_OTLP_HEADERS: ""
+  # CA cert path on the target for https endpoints; the file itself ships via
+  # the app role from files/k3s-ca.crt (git-ignored). Blank = system CAs.
+  OTEL_EXPORTER_OTLP_CERTIFICATE: ""
