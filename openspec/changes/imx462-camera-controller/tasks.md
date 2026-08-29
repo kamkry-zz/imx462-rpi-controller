@@ -101,3 +101,4 @@
 - [x] 13.1 Add GitHub Actions workflow running pytest (Python 3.11/3.12/3.13) on PRs/pushes to `main`
 - [x] 13.2 Add a ruff lint job to the CI workflow
 - [x] 13.3 Document CI in README and add a CI requirement to the deployment spec
+- [x] 13.4 Post aggregated test results as a PR comment (JUnit summary script + github-script)

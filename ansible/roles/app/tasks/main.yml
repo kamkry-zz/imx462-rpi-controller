@@ -6,8 +6,15 @@
     name:
       - python3-picamera2
       - python3-venv
+      - prometheus-node-exporter
     state: present
     update_cache: true
+
+- name: Ensure node_exporter is enabled and running
+  systemd:
+    name: prometheus-node-exporter
+    enabled: true
+    state: started
 
 - name: Install vendor camera tuning file (replaces imx290.json for correct IMX462 colour)
   block:

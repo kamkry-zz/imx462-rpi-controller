@@ -79,3 +79,8 @@ push to the default branch.
 #### Scenario: Push to default branch runs CI
 - **WHEN** a commit is pushed to the default branch
 - **THEN** the same tests and lint run on the push
+
+#### Scenario: Test results posted to the PR
+- **WHEN** a pull request run finishes
+- **THEN** a comment with the aggregated test results (passed/failed/skipped and
+  failed test names) is posted to the pull request
