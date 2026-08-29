@@ -316,24 +316,30 @@ def _dump_dict(data: dict[str, Any], indent: int) -> str:
     return "\n".join(lines)
 
 
+def _dump_list_item(items: list[tuple[str, Any]], indent: int) -> list[str]:
+    pad = "  " * indent
+    k0, v0 = items[0]
+    lines = []
+    if isinstance(v0, (dict, list)) and v0:
+        lines.append(f"{pad}- {_scalar(k0)}:")
+        lines.append(_dump_yaml(v0, indent + 2))
+    else:
+        lines.append(f"{pad}- {_scalar(k0)}: {_scalar(v0)}")
+    for k, v in items[1:]:
+        if isinstance(v, (dict, list)) and v:
+            lines.append(f"{pad}  {_scalar(k)}:")
+            lines.append(_dump_yaml(v, indent + 2))
+        else:
+            lines.append(f"{pad}  {_scalar(k)}: {_scalar(v)}")
+    return lines
+
+
 def _dump_list(data: list[Any], indent: int) -> str:
     pad = "  " * indent
     lines = []
     for item in data:
         if isinstance(item, dict):
-            items = list(item.items())
-            k0, v0 = items[0]
-            if isinstance(v0, (dict, list)) and v0:
-                lines.append(f"{pad}- {_scalar(k0)}:")
-                lines.append(_dump_yaml(v0, indent + 2))
-            else:
-                lines.append(f"{pad}- {_scalar(k0)}: {_scalar(v0)}")
-            for k, v in items[1:]:
-                if isinstance(v, (dict, list)) and v:
-                    lines.append(f"{pad}  {_scalar(k)}:")
-                    lines.append(_dump_yaml(v, indent + 2))
-                else:
-                    lines.append(f"{pad}  {_scalar(k)}: {_scalar(v)}")
+            lines.extend(_dump_list_item(list(item.items()), indent))
         else:
             lines.append(f"{pad}- {_scalar(item)}")
     return "\n".join(lines)
