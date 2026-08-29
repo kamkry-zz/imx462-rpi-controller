@@ -115,13 +115,13 @@
     <aside class="sidebar">
       <section class="card">
         <h2>Status</h2>
-        <dl class="stats" id="stats">
-          <div class="stat"><dt>Uptime</dt><dd id="stat-uptime">—</dd></div>
-          <div class="stat"><dt>Recording</dt><dd id="stat-recording">—</dd></div>
-          <div class="stat"><dt>ISO</dt><dd id="stat-iso">—</dd></div>
-          <div class="stat"><dt>Shutter</dt><dd id="stat-shutter">—</dd></div>
-          <div class="stat stat-clients"><dt>Clients</dt><dd id="stat-clients">—</dd></div>
-        </dl>
+        <div class="stats" id="stats">
+          <div class="stat"><span class="dt">Uptime</span><span class="dd" id="stat-uptime">—</span></div>
+          <div class="stat"><span class="dt">Recording</span><span class="dd" id="stat-recording">—</span></div>
+          <div class="stat"><span class="dt">ISO</span><span class="dd" id="stat-iso">—</span></div>
+          <div class="stat"><span class="dt">Shutter</span><span class="dd" id="stat-shutter">—</span></div>
+          <div class="stat stat-clients"><span class="dt">Clients</span><span class="dd" id="stat-clients">—</span></div>
+        </div>
       </section>
 
       <section class="card">
@@ -139,6 +139,6 @@
     </aside>
   </main>
 
-  <script src="/app.js" defer></script>
+  <script type="module" src="/app.js"></script>
 </body>
 </html>

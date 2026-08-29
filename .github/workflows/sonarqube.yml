@@ -1,0 +1,165 @@
+name: SonarQube
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: sonarqube-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  sonar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Guard - is Sonar configured?
+        id: guard
+        run: |
+          if [ -n "${{ secrets.SONAR_TOKEN }}" ] && [ -n "${{ secrets.SONAR_HOST_URL }}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "SonarQube secrets not set; skipping."
+          fi
+
+      - name: SonarQube Scan
+        id: scan
+        if: steps.guard.outputs.enabled == 'true'
+        continue-on-error: true
+        uses: SonarSource/sonarqube-scan-action@v7
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      - name: Read Sonar quality gate status
+        id: gate
+        if: steps.guard.outputs.enabled == 'true' && steps.scan.outcome == 'success'
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        run: |
+          set -euo pipefail
+          host="${SONAR_HOST_URL%/}"
+          report_task=".scannerwork/report-task.txt"
+          analysis_id=""
+
+          if [ -f "$report_task" ]; then
+            ce_task_id=$(grep '^ceTaskId=' "$report_task" | cut -d'=' -f2- || true)
+            if [ -n "$ce_task_id" ]; then
+              for _ in $(seq 1 30); do
+                ce_json=$(curl -sS -u "${SONAR_TOKEN}:" "${host}/api/ce/task?id=${ce_task_id}" || echo '{}')
+                ce_status=$(echo "$ce_json" | jq -r '.task.status // "UNKNOWN"')
+                if [ "$ce_status" = "SUCCESS" ]; then
+                  analysis_id=$(echo "$ce_json" | jq -r '.task.analysisId // ""')
+                  break
+                fi
+                if [ "$ce_status" = "FAILED" ] || [ "$ce_status" = "CANCELED" ]; then
+                  echo "status=ERROR" >> "$GITHUB_OUTPUT"
+                  exit 0
+                fi
+                sleep 5
+              done
+            fi
+          fi
+
+          if [ -n "$analysis_id" ]; then
+            gate=$(curl -sS -u "${SONAR_TOKEN}:" "${host}/api/qualitygates/project_status?analysisId=${analysis_id}" || echo '{}')
+          else
+            gate=$(curl -sS -u "${SONAR_TOKEN}:" "${host}/api/qualitygates/project_status?projectKey=kamkry-zz_imx462-rpi-controller_959a75ba-70f3-4230-8762-55f97d4d38a1" || echo '{}')
+          fi
+
+          status=$(echo "$gate" | jq -r '.projectStatus.status // "UNKNOWN"')
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          echo "analysis_id=${analysis_id}" >> "$GITHUB_OUTPUT"
+
+      - name: Compose Sonar PR comment
+        id: compose
+        if: steps.guard.outputs.enabled == 'true' && steps.scan.outcome == 'success' && steps.gate.outcome == 'success'
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          GATE_STATUS: ${{ steps.gate.outputs.status }}
+        run: |
+          set -euo pipefail
+          host="${SONAR_HOST_URL%/}"
+          metric_keys="bugs,vulnerabilities,code_smells,security_hotspots,coverage,duplicated_lines_density"
+          measures=$(curl -sS -u "${SONAR_TOKEN}:" \
+            "${host}/api/measures/component?component=kamkry-zz_imx462-rpi-controller_959a75ba-70f3-4230-8762-55f97d4d38a1&metricKeys=${metric_keys}" || echo '{}')
+
+          case "$GATE_STATUS" in
+            OK) gate_emoji="✅ Passed" ;;
+            ERROR) gate_emoji="❌ Failed" ;;
+            *) gate_emoji="❔ Unknown" ;;
+          esac
+
+          val() { echo "$measures" | jq -r --arg k "$1" '(.component.measures[]? | select(.metric==$k) | .value) // "—"'; }
+
+          {
+            echo "<!-- ci-sonar-results -->"
+            echo
+            echo "### 🧭 SonarQube"
+            echo
+            echo "**Quality Gate:** ${gate_emoji}"
+            echo
+            echo "| Metric | Value |"
+            echo "|--------|-------|"
+            echo "| 🐞 Bugs | $(val bugs) |"
+            echo "| 🔓 Vulnerabilities | $(val vulnerabilities) |"
+            echo "| 🌫️ Code Smells | $(val code_smells) |"
+            echo "| 🔥 Security Hotspots | $(val security_hotspots) |"
+            echo "| 🧪 Coverage | $(val coverage)% |"
+            echo "| 📑 Duplication | $(val duplicated_lines_density)% |"
+            echo
+            echo "[Open project in SonarQube](${host}/dashboard?id=kamkry-zz_imx462-rpi-controller_959a75ba-70f3-4230-8762-55f97d4d38a1)"
+            echo
+            echo "> ℹ️ Community edition analyzes the project branch (no native PR decoration)."
+          } > sonar_comment.md
+          echo "comment_ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Comment Sonar results on PR
+        if: steps.compose.outputs.comment_ready == 'true' && github.event_name == 'pull_request'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- ci-sonar-results -->';
+            const base = fs.readFileSync('sonar_comment.md', 'utf8');
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `${base}\n[View run](${runUrl})\n`;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Enforce Sonar quality gate
+        if: steps.guard.outputs.enabled == 'true' && steps.scan.outcome == 'success' && steps.gate.outputs.status == 'ERROR'
+        run: |
+          echo "SonarQube quality gate failed."
+          exit 1

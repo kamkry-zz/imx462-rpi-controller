@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..config import AppConfig, CaptureConfig, DefaultMode
+from ..config import AppConfig, CaptureConfig
 from ..otel import get_tracer
 
 logger = logging.getLogger(__name__)
@@ -479,7 +479,7 @@ class CameraWorker:
             if frame is None:
                 continue
             with self._lock:
-                for q in list(self._subscribers):
+                for q in self._subscribers:
                     try:
                         q.put_nowait(frame)
                     except queue.Full:
@@ -554,7 +554,7 @@ class CameraManager:
                     id=cam.id,
                     name=cam.name,
                     model=entry.get("Model", ""),
-                    modes=_default_modes(self._config.default_mode),
+                    modes=_default_modes(),
                 )
             )
         return infos
@@ -701,7 +701,7 @@ def _default_mjpeg_encoder_factory(output: Any) -> tuple[Any, Any]:
     return MJPEGEncoder(), FileOutput(output)
 
 
-def _default_modes(mode: DefaultMode) -> list[CameraMode]:
+def _default_modes() -> list[CameraMode]:
     return [
         CameraMode(width=1280, height=720, bit_depth=10, framerate=60),
         CameraMode(width=1280, height=720, bit_depth=12, framerate=60),

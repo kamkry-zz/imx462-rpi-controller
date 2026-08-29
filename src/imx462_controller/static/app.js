@@ -343,33 +343,37 @@ function connectWs() {
   };
 }
 
+function renderCameraStats(current) {
+  state.recording = current.recording;
+  updateRecordButton();
+  el.statRecording.textContent = current.recording ? "yes" : "no";
+}
+
+function renderLiveSettings(settings) {
+  if (settings.analogue_gain > 0) {
+    el.statIso.textContent = String(Math.round(settings.analogue_gain * 100));
+    if (el.aeToggle.checked) el.iso.value = String(isoForGain(settings.analogue_gain));
+  }
+  if (settings.exposure_time > 0) {
+    el.statShutter.textContent = formatShutterUs(settings.exposure_time);
+    if (el.aeToggle.checked) {
+      const nearest = nearestShutterUs(settings.exposure_time);
+      if (nearest != null) el.shutter.value = String(nearest);
+    }
+  }
+}
+
 function renderStatus(msg) {
   if (msg.uptime_seconds != null) {
     el.statUptime.textContent = `${msg.uptime_seconds}s`;
   }
   const cameras = msg.cameras || [];
   const current = cameras.find((c) => c.id === Number(state.selectedId));
-  if (current) {
-    state.recording = current.recording;
-    updateRecordButton();
-    el.statRecording.textContent = current.recording ? "yes" : "no";
-  }
-  el.statClients.textContent = msg.clients && msg.clients.length ? msg.clients.join(", ") : "—";
+  if (current) renderCameraStats(current);
+  el.statClients.textContent = msg.clients?.length ? msg.clients.join(", ") : "—";
 
-  const settings = msg.settings && msg.settings[String(state.selectedId)];
-  if (settings) {
-    if (settings.analogue_gain > 0) {
-      el.statIso.textContent = String(Math.round(settings.analogue_gain * 100));
-      if (el.aeToggle.checked) el.iso.value = String(isoForGain(settings.analogue_gain));
-    }
-    if (settings.exposure_time > 0) {
-      el.statShutter.textContent = formatShutterUs(settings.exposure_time);
-      if (el.aeToggle.checked) {
-        const nearest = nearestShutterUs(settings.exposure_time);
-        if (nearest != null) el.shutter.value = String(nearest);
-      }
-    }
-  }
+  const settings = msg.settings?.[String(state.selectedId)];
+  if (settings) renderLiveSettings(settings);
 }
 
 function formatShutterUs(us) {
@@ -488,24 +492,24 @@ async function applyControls() {
     AeEnable: ae,
     AwbEnable: awb,
     AeFlickerPeriod: flickerPeriodUs(el.flicker.value),
-    Brightness: parseFloat(el.brightness.value) || 0,
-    Contrast: parseFloat(el.contrast.value) || 1.0,
-    Saturation: parseFloat(el.saturation.value) || 1.0,
+    Brightness: Number.parseFloat(el.brightness.value) || 0,
+    Contrast: Number.parseFloat(el.contrast.value) || 1.0,
+    Saturation: Number.parseFloat(el.saturation.value) || 1.0,
   };
   if (!ae) {
-    const shutterUs = parseInt(el.shutter.value, 10);
+    const shutterUs = Number.parseInt(el.shutter.value, 10);
     if (!Number.isNaN(shutterUs) && shutterUs > 0) {
       const nativeUs = Math.min(shutterUs, MAX_NATIVE_EXPOSURE_US);
       const frameUs = Math.max(nativeUs, MIN_FRAME_US);
       controls.ExposureTime = nativeUs;
       controls.FrameDurationLimits = [frameUs, frameUs];
     }
-    controls.AnalogueGain = gainForIso(parseInt(el.iso.value, 10)) ?? 1.0;
+    controls.AnalogueGain = gainForIso(Number.parseInt(el.iso.value, 10)) ?? 1.0;
   } else {
     controls.FrameDurationLimits = [MIN_FRAME_US, MIN_FRAME_US];
   }
   if (!awb) {
-    const wb = parseInt(el.wbTemp.value, 10);
+    const wb = Number.parseInt(el.wbTemp.value, 10);
     if (!Number.isNaN(wb)) controls.ColourTemperature = wb;
   }
   try {
@@ -533,7 +537,7 @@ async function applyFlip() {
 
 function shouldSingleMode() {
   if (el.aeToggle.checked) return false;
-  const shutterUs = parseInt(el.shutter.value, 10);
+  const shutterUs = Number.parseInt(el.shutter.value, 10);
   return !Number.isNaN(shutterUs) && shutterUs > SINGLE_MODE_THRESHOLD_US;
 }
 
@@ -572,9 +576,9 @@ function updateSingleUI() {
 
 async function captureFrame() {
   if (state.selectedId == null || state.capturing) return;
-  const shutterUs = parseInt(el.shutter.value, 10);
+  const shutterUs = Number.parseInt(el.shutter.value, 10);
   const exposureUs = Number.isNaN(shutterUs) || shutterUs <= 0 ? MIN_FRAME_US : shutterUs;
-  const gain = gainForIso(parseInt(el.iso.value, 10)) ?? 1.0;
+  const gain = gainForIso(Number.parseInt(el.iso.value, 10)) ?? 1.0;
   state.capturing = true;
   el.captureBtn.disabled = true;
   el.captureBtn.textContent = "Capturing…";
@@ -583,8 +587,9 @@ async function captureFrame() {
       method: "POST",
       body: JSON.stringify({ exposure_us: exposureUs, gain }),
     });
+    const durationStr = exposureUs >= 1000000 ? `${(exposureUs / 1000000).toFixed(0)}s` : "frame";
     setStreamSrc(`${res.url}?t=${Date.now()}`);
-    toast(`Captured ${exposureUs >= 1000000 ? `${(exposureUs / 1000000).toFixed(0)}s` : "frame"}`);
+    toast(`Captured ${durationStr}`);
     loadAssets();
   } catch (err) {
     toast(`Capture failed: ${err.message}`, true);
@@ -644,6 +649,10 @@ populateIso();
 updateAeState();
 updateAwbState();
 updateSingleUI();
-loadCameras().catch((err) => console.error("Failed to load cameras:", err));
-loadAssets();
+try {
+  await loadCameras();
+} catch (err) {
+  console.error("Failed to load cameras:", err);
+}
+await loadAssets();
 connectWs();
