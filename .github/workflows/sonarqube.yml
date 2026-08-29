@@ -75,7 +75,7 @@ jobs:
           if [ -n "$analysis_id" ]; then
             gate=$(curl -sS -u "${SONAR_TOKEN}:" "${host}/api/qualitygates/project_status?analysisId=${analysis_id}" || echo '{}')
           else
-            gate=$(curl -sS -u "${SONAR_TOKEN}:" "${host}/api/qualitygates/project_status?projectKey=imx462-rpi-controller" || echo '{}')
+            gate=$(curl -sS -u "${SONAR_TOKEN}:" "${host}/api/qualitygates/project_status?projectKey=kamkry-zz_imx462-rpi-controller_959a75ba-70f3-4230-8762-55f97d4d38a1" || echo '{}')
           fi
 
           status=$(echo "$gate" | jq -r '.projectStatus.status // "UNKNOWN"')
@@ -94,7 +94,7 @@ jobs:
           host="${SONAR_HOST_URL%/}"
           metric_keys="bugs,vulnerabilities,code_smells,security_hotspots,coverage,duplicated_lines_density"
           measures=$(curl -sS -u "${SONAR_TOKEN}:" \
-            "${host}/api/measures/component?component=imx462-rpi-controller&metricKeys=${metric_keys}" || echo '{}')
+            "${host}/api/measures/component?component=kamkry-zz_imx462-rpi-controller_959a75ba-70f3-4230-8762-55f97d4d38a1&metricKeys=${metric_keys}" || echo '{}')
 
           case "$GATE_STATUS" in
             OK) gate_emoji="✅ Passed" ;;
@@ -118,7 +118,7 @@ jobs:
             echo "| 🧪 Coverage | $(val coverage)% |"
             echo "| 📑 Duplication | $(val duplicated_lines_density)% |"
             echo
-            echo "[Open project in SonarQube](${host}/dashboard?id=imx462-rpi-controller)"
+            echo "[Open project in SonarQube](${host}/dashboard?id=kamkry-zz_imx462-rpi-controller_959a75ba-70f3-4230-8762-55f97d4d38a1)"
             echo
             echo "> ℹ️ Community edition analyzes the project branch (no native PR decoration)."
           } > sonar_comment.md
