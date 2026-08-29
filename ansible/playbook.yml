@@ -1,0 +1,10 @@
+---
+- name: Deploy IMX462 RPi Camera Controller
+  hosts: imx462
+  become: true
+
+  roles:
+    - role: camera-overlay
+      vars:
+        camera_count: "{{ imx462_camera_count }}"
+    - role: app

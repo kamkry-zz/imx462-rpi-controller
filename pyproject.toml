@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "imx462-rpi-controller"
+version = "0.1.0"
+description = "Controller for the Inno Maker IMX462 camera on Raspberry Pi"
+requires-python = ">=3.9"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "paho-mqtt>=2.0",
+    "opentelemetry-distro[otlp]==0.65b0",
+    "opentelemetry-instrumentation-fastapi==0.65b0",
+    "pydantic>=2.0",
+    "PyYAML>=6.0",
+    "python-dotenv>=1.0",
+    "Pillow>=9.0",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+    "ruff>=0.4",
+]
+
+# NOTE: `picamera2` is NOT a pip dependency. It ships via apt
+# (`python3-picamera2`) on Raspberry Pi OS and depends on the system libcamera.
+# The Ansible role installs it and the service runs in a venv with
+# `--system-site-packages` (or system Python) so it is importable.
+
+[project.scripts]
+imx462-controller = "imx462_controller.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"imx462_controller" = ["static/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

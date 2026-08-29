@@ -1,0 +1,46 @@
+# Example host_vars file. Copy to `host_vars/<inventory-hostname>.yml`
+# (git-ignored) and adjust per target.
+imx462_camera_count: 1          # 1 or 2 cameras
+
+imx462_app_dir: /opt/imx462-controller
+imx462_venv: "{{ imx462_app_dir }}/venv"
+imx462_media_dir: /var/lib/imx462-controller/media
+imx462_service_user: user
+
+# Non-secret config (rendered to config.yaml on the target).
+imx462_config:
+  server:
+    host: "0.0.0.0"
+    port: 8000
+  cameras:
+    - id: 0
+      name: "cam0"
+    # For a second camera: set imx462_camera_count: 2 and add:
+    # - id: 1
+    #   name: "cam1"
+  default_mode:
+    width: 1920
+    height: 1080
+    bit_depth: 12
+    framerate: 60
+  capture:
+    output_dir: "{{ imx462_media_dir }}"
+    photo_format: "jpg"
+    video_format: "mp4"
+  mqtt:
+    topics:
+      events: "imx462/events"
+      status: "imx462/status"
+      metrics: "imx462/metrics"
+    heartbeat_interval_seconds: 30
+  otel:
+    endpoint: "http://otel.example:4318"
+    service_name: "imx462-rpi-controller"
+
+# Secrets (rendered to .env on the target). Use Ansible Vault in practice.
+imx462_env:
+  MQTT_HOST: "broker.example.com"
+  MQTT_PORT: "1883"
+  MQTT_USERNAME: ""
+  MQTT_PASSWORD: ""
+  OTEL_EXPORTER_OTLP_HEADERS: ""

@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Build artifacts
+build/
+dist/
+
+# Local config & secrets (templates are committed)
+config.yaml
+.env
+
+# Ansible local inventory / host_vars (examples are committed)
+ansible/inventory.ini
+ansible/host_vars/*
+!ansible/host_vars/*.example.yml
+ansible/group_vars/
+
+# Captured media (generated output, not source)
+media/
+/var/lib/imx462-controller/
+samples/
+
+# OS
+.DS_Store

@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IMX462 Camera Controller</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-dot" aria-hidden="true"></span>
+      <h1>IMX462 Controller</h1>
+    </div>
+    <div class="connection" id="connection">
+      <span class="status-pill" id="ws-pill" data-state="off">offline</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="stage">
+      <div class="viewport" id="viewport">
+        <img id="stream" alt="Live view" class="stream" />
+        <div class="placeholder" id="placeholder">
+          <p>Select a camera to start live view</p>
+        </div>
+        <button id="fullscreen-btn" class="fullscreen-btn" type="button" title="Fullscreen">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 14H5v5h5v-2H7v-3Zm-2-4h2V7h3V5H5v5Zm12 7h-3v2h5v-5h-2v3ZM14 5v2h3v3h2V5h-5Z"/></svg>
+        </button>
+        <button id="single-btn" class="single-btn" type="button" title="Single-frame capture">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M9 3 7.2 5H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3.2L15 3H9Zm3 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z"/></svg>
+          <span>Single frame</span>
+        </button>
+        <button id="capture-btn" class="capture-btn" type="button" hidden>Capture frame</button>
+      </div>
+      <div class="controls">
+        <div class="control-group">
+          <label class="label" for="camera-select">Camera</label>
+          <select id="camera-select" class="select"></select>
+        </div>
+        <div class="control-group">
+          <label class="label" for="mode-select">Mode</label>
+          <select id="mode-select" class="select"></select>
+        </div>
+        <div class="actions">
+          <button id="photo-btn" class="btn btn-accent" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M9 3 7.2 5H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3.2L15 3H9Zm3 6a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z"/></svg>
+            Photo
+          </button>
+          <button id="record-btn" class="btn" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="currentColor"/></svg>
+            <span id="record-label">Record</span>
+          </button>
+        </div>
+      </div>
+
+      <section class="card">
+        <h2>Image Controls</h2>
+        <div class="control-grid">
+          <label class="toggle">
+            <input type="checkbox" id="ae-toggle" checked />
+            <span>Auto Exposure</span>
+          </label>
+          <label class="slider">
+            <span>Shutter</span>
+            <select id="shutter" class="select" disabled></select>
+          </label>
+          <label class="slider">
+            <span>Anti-flicker</span>
+            <select id="flicker" class="select">
+              <option value="off" selected>Off</option>
+              <option value="50">50 Hz</option>
+              <option value="60">60 Hz</option>
+            </select>
+          </label>
+          <label class="slider">
+            <span>ISO</span>
+            <select id="iso" class="select" disabled></select>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="awb-toggle" checked />
+            <span>Auto White Balance</span>
+          </label>
+          <label class="slider">
+            <span>White Balance <output id="wb-out">4500K</output></span>
+            <input type="range" id="wb-temp" min="2500" max="10000" step="100" value="4500" disabled />
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="hflip-toggle" />
+            <span>Flip Horizontal</span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="vflip-toggle" />
+            <span>Flip Vertical</span>
+          </label>
+          <label class="slider">
+            <span>Brightness <output id="brightness-out">0</output></span>
+            <input type="range" id="brightness" min="-1" max="1" step="0.1" value="0" />
+          </label>
+          <label class="slider">
+            <span>Contrast <output id="contrast-out">1.0</output></span>
+            <input type="range" id="contrast" min="0" max="2" step="0.1" value="1.0" />
+          </label>
+          <label class="slider">
+            <span>Saturation <output id="saturation-out">1.0</output></span>
+            <input type="range" id="saturation" min="0" max="2" step="0.1" value="1.0" />
+          </label>
+        </div>
+      </section>
+    </section>
+
+    <aside class="sidebar">
+      <section class="card">
+        <h2>Status</h2>
+        <dl class="stats" id="stats">
+          <div class="stat"><dt>Uptime</dt><dd id="stat-uptime">—</dd></div>
+          <div class="stat"><dt>Recording</dt><dd id="stat-recording">—</dd></div>
+          <div class="stat"><dt>ISO</dt><dd id="stat-iso">—</dd></div>
+          <div class="stat"><dt>Shutter</dt><dd id="stat-shutter">—</dd></div>
+          <div class="stat stat-clients"><dt>Clients</dt><dd id="stat-clients">—</dd></div>
+        </dl>
+      </section>
+
+      <section class="card">
+        <h2>Assets</h2>
+        <div class="table-wrap">
+          <table class="assets" id="assets-table">
+            <thead>
+              <tr><th>Name</th><th>Type</th><th>Size</th><th></th></tr>
+            </thead>
+            <tbody id="assets-body"></tbody>
+          </table>
+          <p class="empty" id="assets-empty">No assets yet</p>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>
