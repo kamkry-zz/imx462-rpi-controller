@@ -63,6 +63,8 @@ rollback.
 - Tests: `python -m pytest` · Lint: `ruff check .`
 - CI: GitHub Actions runs `pytest` (Python 3.11/3.12/3.13) and `ruff` on every
   pull request and push to `main` (`.github/workflows/ci.yml`).
+- Dependencies: updated automatically via Renovate (`renovate.json`) — PRs are
+  opened once the Renovate app is installed on the repository.
 
 ## License
 

@@ -344,11 +344,11 @@ body {
   font-size: 0.85rem;
 }
 
-.stat dt {
+.stat .dt {
   color: var(--color-muted-foreground);
 }
 
-.stat dd {
+.stat .dd {
   margin: 0;
   font-weight: 500;
 }

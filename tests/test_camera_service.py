@@ -281,7 +281,8 @@ def test_finalize_video_mp4(monkeypatch, tmp_path):
     result = _finalize_video(raw, "mp4")
     assert result.suffix == ".mp4"
     assert not raw.exists()
-    assert calls and calls[0][0] == "ffmpeg"
+    assert calls
+    assert calls[0][0] == "ffmpeg"
 
 
 def test_finalize_video_falls_back_without_ffmpeg(monkeypatch, tmp_path):

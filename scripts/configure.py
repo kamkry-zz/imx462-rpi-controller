@@ -105,6 +105,11 @@ def default_answers() -> dict[str, Any]:
     }
 
 
+def _prompt(label: str, default: Any = "") -> str:
+    suffix = f" [{_style(str(default), _DIM)}]" if str(default) else ""
+    return _style(f"? {label}", _BOLD) + suffix + " > "
+
+
 def _ask(
     label: str,
     default: Any = "",
@@ -114,15 +119,10 @@ def _ask(
 ) -> str:
     """Ask one question; returns a string (or int for ``validate=int``)."""
     while True:
-        if secret:
-            prompt = _style(f"? {label}", _BOLD) + " > "
-            if sys.stdin.isatty():
-                raw = getpass.getpass(prompt)
-            else:
-                raw = input(prompt)
+        if secret and sys.stdin.isatty():
+            raw = getpass.getpass(_prompt(label))
         else:
-            suffix = f" [{_style(str(default), _DIM)}]" if str(default) else ""
-            raw = input(_style(f"? {label}", _BOLD) + suffix + " > ")
+            raw = input(_prompt(label, default))
         value = raw.strip() or str(default)
         if validate is not None:
             ok, message, value = validate(value)
@@ -294,52 +294,64 @@ def _scalar(value: Any) -> str:
     raise TypeError(f"unsupported YAML scalar type: {type(value)}")
 
 
+def _dump_dict(data: dict[str, Any], indent: int) -> str:
+    pad = "  " * indent
+    lines = []
+    for key, value in data.items():
+        k = _scalar(key)
+        if isinstance(value, dict):
+            if value:
+                lines.append(f"{pad}{k}:")
+                lines.append(_dump_yaml(value, indent + 1))
+            else:
+                lines.append(f"{pad}{k}: {{}}")
+        elif isinstance(value, list):
+            if value:
+                lines.append(f"{pad}{k}:")
+                lines.append(_dump_yaml(value, indent + 1))
+            else:
+                lines.append(f"{pad}{k}: []")
+        else:
+            lines.append(f"{pad}{k}: {_scalar(value)}")
+    return "\n".join(lines)
+
+
+def _dump_list_item(items: list[tuple[str, Any]], indent: int) -> list[str]:
+    pad = "  " * indent
+    k0, v0 = items[0]
+    lines = []
+    if isinstance(v0, (dict, list)) and v0:
+        lines.append(f"{pad}- {_scalar(k0)}:")
+        lines.append(_dump_yaml(v0, indent + 2))
+    else:
+        lines.append(f"{pad}- {_scalar(k0)}: {_scalar(v0)}")
+    for k, v in items[1:]:
+        if isinstance(v, (dict, list)) and v:
+            lines.append(f"{pad}  {_scalar(k)}:")
+            lines.append(_dump_yaml(v, indent + 2))
+        else:
+            lines.append(f"{pad}  {_scalar(k)}: {_scalar(v)}")
+    return lines
+
+
+def _dump_list(data: list[Any], indent: int) -> str:
+    pad = "  " * indent
+    lines = []
+    for item in data:
+        if isinstance(item, dict):
+            lines.extend(_dump_list_item(list(item.items()), indent))
+        else:
+            lines.append(f"{pad}- {_scalar(item)}")
+    return "\n".join(lines)
+
+
 def _dump_yaml(data: Any, indent: int = 0) -> str:
     """Minimal YAML dumper sufficient for the host_vars schema."""
-    pad = "  " * indent
-
     if isinstance(data, dict):
-        lines = []
-        for key, value in data.items():
-            k = _scalar(key)
-            if isinstance(value, dict):
-                if value:
-                    lines.append(f"{pad}{k}:")
-                    lines.append(_dump_yaml(value, indent + 1))
-                else:
-                    lines.append(f"{pad}{k}: {{}}")
-            elif isinstance(value, list):
-                if value:
-                    lines.append(f"{pad}{k}:")
-                    lines.append(_dump_yaml(value, indent + 1))
-                else:
-                    lines.append(f"{pad}{k}: []")
-            else:
-                lines.append(f"{pad}{k}: {_scalar(value)}")
-        return "\n".join(lines)
-
+        return _dump_dict(data, indent)
     if isinstance(data, list):
-        lines = []
-        for item in data:
-            if isinstance(item, dict):
-                items = list(item.items())
-                k0, v0 = items[0]
-                if isinstance(v0, (dict, list)) and v0:
-                    lines.append(f"{pad}- {_scalar(k0)}:")
-                    lines.append(_dump_yaml(v0, indent + 2))
-                else:
-                    lines.append(f"{pad}- {_scalar(k0)}: {_scalar(v0)}")
-                for k, v in items[1:]:
-                    if isinstance(v, (dict, list)) and v:
-                        lines.append(f"{pad}  {_scalar(k)}:")
-                        lines.append(_dump_yaml(v, indent + 2))
-                    else:
-                        lines.append(f"{pad}  {_scalar(k)}: {_scalar(v)}")
-            else:
-                lines.append(f"{pad}- {_scalar(item)}")
-        return "\n".join(lines)
-
-    return pad + _scalar(data)
+        return _dump_list(data, indent)
+    return "  " * indent + _scalar(data)
 
 
 def render_inventory(answers: dict[str, Any]) -> str:
@@ -448,7 +460,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         answers = collect_answers(args.answers_file)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:
         print(_style(f"  ✗ {exc}", _RED), file=sys.stderr)
         return 1
 
