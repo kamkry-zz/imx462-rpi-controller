@@ -12,6 +12,7 @@ concurrency:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   sonar:
@@ -31,15 +32,6 @@ jobs:
             echo "SonarQube secrets not set; skipping."
           fi
 
-      - name: Prepare Sonar pull-request arguments
-        id: sonar_prepare
-        if: steps.guard.outputs.enabled == 'true'
-        run: |
-          echo "prargs=" >> "$GITHUB_OUTPUT"
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "prargs=-Dsonar.pullrequest.provider=github -Dsonar.pullrequest.key=${{ github.event.pull_request.number }} -Dsonar.pullrequest.branch=${{ github.event.pull_request.head.ref }} -Dsonar.pullrequest.base=${{ github.event.pull_request.base.ref }}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: SonarQube Scan
         id: scan
         if: steps.guard.outputs.enabled == 'true'
@@ -48,9 +40,6 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-        with:
-          args: >
-            ${{ steps.sonar_prepare.outputs.prargs }}
 
       - name: Read Sonar quality gate status
         id: gate
@@ -92,6 +81,80 @@ jobs:
           status=$(echo "$gate" | jq -r '.projectStatus.status // "UNKNOWN"')
           echo "status=${status}" >> "$GITHUB_OUTPUT"
           echo "analysis_id=${analysis_id}" >> "$GITHUB_OUTPUT"
+
+      - name: Compose Sonar PR comment
+        id: compose
+        if: steps.guard.outputs.enabled == 'true' && steps.scan.outcome == 'success' && steps.gate.outcome == 'success'
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          GATE_STATUS: ${{ steps.gate.outputs.status }}
+        run: |
+          set -euo pipefail
+          host="${SONAR_HOST_URL%/}"
+          metric_keys="bugs,vulnerabilities,code_smells,security_hotspots,coverage,duplicated_lines_density"
+          measures=$(curl -sS -u "${SONAR_TOKEN}:" \
+            "${host}/api/measures/component?component=imx462-rpi-controller&metricKeys=${metric_keys}" || echo '{}')
+
+          case "$GATE_STATUS" in
+            OK) gate_emoji="✅ Passed" ;;
+            ERROR) gate_emoji="❌ Failed" ;;
+            *) gate_emoji="❔ Unknown" ;;
+          esac
+
+          val() { echo "$measures" | jq -r --arg k "$1" '(.component.measures[]? | select(.metric==$k) | .value) // "—"'; }
+
+          {
+            echo "### 🧭 SonarQube"
+            echo
+            echo "**Quality Gate:** ${gate_emoji}"
+            echo
+            echo "| Metric | Value |"
+            echo "|--------|-------|"
+            echo "| 🐞 Bugs | $(val bugs) |"
+            echo "| 🔓 Vulnerabilities | $(val vulnerabilities) |"
+            echo "| 🌫️ Code Smells | $(val code_smells) |"
+            echo "| 🔥 Security Hotspots | $(val security_hotspots) |"
+            echo "| 🧪 Coverage | $(val coverage)% |"
+            echo "| 📑 Duplication | $(val duplicated_lines_density)% |"
+            echo
+            echo "[Open project in SonarQube](${host}/dashboard?id=imx462-rpi-controller)"
+            echo
+            echo "> ℹ️ Community edition analyzes the project branch (no native PR decoration)."
+          } > sonar_comment.md
+          echo "comment_ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Comment Sonar results on PR
+        if: steps.compose.outputs.comment_ready == 'true' && github.event_name == 'pull_request'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- ci-sonar-results -->';
+            const base = fs.readFileSync('sonar_comment.md', 'utf8');
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `${base}\n[View run](${runUrl})\n`;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
 
       - name: Enforce Sonar quality gate
         if: steps.guard.outputs.enabled == 'true' && steps.scan.outcome == 'success' && steps.gate.outputs.status == 'ERROR'
