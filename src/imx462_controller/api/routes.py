@@ -83,11 +83,23 @@ def list_cameras(request: Request):
                 "name": c.name,
                 "model": c.model,
                 "modes": [m.__dict__ for m in c.modes],
+                "default_mode": c.default_mode.__dict__ if c.default_mode else None,
+                "capabilities": c.capabilities.to_dict() if c.capabilities else None,
             }
             for c in manager.list_cameras()
         ],
         "default_mode": config.default_mode.model_dump(),
     }
+
+
+@router.get("/cameras/{camera_id}/capabilities", responses=_CAMERA_ERROR_RESPONSES)
+def camera_capabilities(camera_id: int, request: Request):
+    manager = _manager(request)
+    try:
+        capabilities = manager.capabilities(camera_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Camera {camera_id} not found")
+    return capabilities.to_dict()
 
 
 @router.get("/cameras/{camera_id}/status", responses=_CAMERA_ERROR_RESPONSES)

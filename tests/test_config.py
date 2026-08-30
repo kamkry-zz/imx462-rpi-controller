@@ -37,6 +37,38 @@ def test_load_config_valid(tmp_path, sample_config_dict):
     assert config.capture.output_dir == "/tmp/media"
 
 
+def test_load_config_camera_overlay_and_default_mode(tmp_path):
+    import yaml
+
+    doc = {
+        "cameras": [
+            {
+                "id": 0,
+                "name": "cam0",
+                "overlay": "imx290",
+                "overlay_params": "clock-frequency=74250000",
+                "default_mode": {"width": 1920, "height": 1080, "bit_depth": 12, "framerate": 60},
+            },
+            {
+                "id": 1,
+                "name": "cam1",
+                "overlay": "imx708",
+                "default_mode": {"width": 2304, "height": 1296, "framerate": 30},
+            },
+        ]
+    }
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(doc))
+    config = load_config(path)
+    cam0, cam1 = config.cameras
+    assert cam0.overlay == "imx290"
+    assert cam0.overlay_params == "clock-frequency=74250000"
+    assert cam0.default_mode.bit_depth == 12
+    assert cam1.overlay == "imx708"
+    assert cam1.default_mode.bit_depth is None
+    assert cam1.default_mode.width == 2304
+
+
 def test_load_config_missing_file(tmp_path):
     from imx462_controller.config import ConfigError
 

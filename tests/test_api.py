@@ -212,7 +212,24 @@ def test_assets_traversal_blocked(client):
 def test_list_cameras_includes_default_mode(client):
     data = client.get("/api/cameras").json()
     assert data["default_mode"]["width"] == 1920
-    assert data["default_mode"]["bit_depth"] == 12
+    assert "bit_depth" in data["default_mode"]
+
+
+def test_list_cameras_includes_capabilities(client):
+    data = client.get("/api/cameras").json()
+    assert data["cameras"][0]["capabilities"]["exposure_max_us"] > 0
+
+
+def test_capabilities_endpoint(client):
+    res = client.get("/api/cameras/0/capabilities")
+    assert res.status_code == 200
+    caps = res.json()
+    assert caps["exposure_max_us"] > 0
+    assert caps["gain_min"] > 0
+
+
+def test_capabilities_unknown_camera_returns_404(client):
+    assert client.get("/api/cameras/99/capabilities").status_code == 404
 
 
 def test_set_stream_mode(client):

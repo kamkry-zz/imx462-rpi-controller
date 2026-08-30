@@ -35,6 +35,7 @@ tracer = get_tracer("imx462_controller.camera")
 # VMAX plus adjustable HMAX), so no software stacking is required for the 1-30 s
 # ladder offered by the UI.
 MIN_FRAME_US = 16_666  # 1/60 s
+IMX290_MAX_EXPOSURE_US = 115_686_258  # sensor max (~115.7 s), used as a fallback bound
 
 
 def _sanitize_controls(controls: dict[str, Any]) -> dict[str, Any]:
@@ -86,8 +87,32 @@ def _yuv420_to_rgb_full(yuv: Any, width: int, height: int) -> Any:
 class CameraMode:
     width: int
     height: int
-    bit_depth: int
-    framerate: int
+    bit_depth: int | None = None
+    framerate: int = 60
+
+
+@dataclass
+class CameraCapabilities:
+    """Per-sensor capabilities surfaced to the UI and external clients."""
+
+    modes: list[CameraMode] = field(default_factory=list)
+    exposure_min_us: int = MIN_FRAME_US
+    exposure_max_us: int = IMX290_MAX_EXPOSURE_US
+    gain_min: float = 1.0
+    gain_max: float = 31.6
+    supports_manual_exposure: bool = True
+    supports_raw12: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "modes": [m.__dict__ for m in self.modes],
+            "exposure_min_us": self.exposure_min_us,
+            "exposure_max_us": self.exposure_max_us,
+            "gain_min": self.gain_min,
+            "gain_max": self.gain_max,
+            "supports_manual_exposure": self.supports_manual_exposure,
+            "supports_raw12": self.supports_raw12,
+        }
 
 
 @dataclass
@@ -96,6 +121,8 @@ class CameraInfo:
     name: str
     model: str = ""
     modes: list[CameraMode] = field(default_factory=list)
+    default_mode: CameraMode | None = None
+    capabilities: CameraCapabilities | None = None
 
 
 class _StreamingOutput(io.BufferedIOBase):
@@ -140,6 +167,163 @@ def _transform(hflip: bool, vflip: bool) -> Any:
         return libcamera.Transform(hflip=hflip, vflip=vflip)
     except ImportError:
         return (hflip, vflip)
+
+
+# Static fallback catalogs keyed by libcamera sensor model. These are used only
+# when libcamera is unavailable (no hardware, tests) or a camera has not yet
+# been opened; the authoritative source is ``read_capabilities``, which reads
+# ``Picamera2.sensor_modes`` / ``Picamera2.camera_controls`` at runtime.
+
+_MODEL_MODES: dict[str, list[CameraMode]] = {
+    "imx290": [  # IMX462 via the imx290 overlay
+        CameraMode(width=1280, height=720, bit_depth=10, framerate=60),
+        CameraMode(width=1280, height=720, bit_depth=12, framerate=60),
+        CameraMode(width=1920, height=1080, bit_depth=10, framerate=60),
+        CameraMode(width=1920, height=1080, bit_depth=12, framerate=60),
+    ],
+    "imx708": [  # Camera Module 3 / 3 Wide (10-bit only)
+        CameraMode(width=1536, height=864, framerate=60),
+        CameraMode(width=2304, height=1296, framerate=30),
+        CameraMode(width=4608, height=2592, framerate=15),
+    ],
+    "imx219": [
+        CameraMode(width=1920, height=1080, framerate=30),
+        CameraMode(width=3280, height=2464, framerate=15),
+    ],
+    "imx477": [
+        CameraMode(width=2028, height=1080, framerate=50),
+        CameraMode(width=4056, height=3040, framerate=10),
+    ],
+    "ov5647": [
+        CameraMode(width=1920, height=1080, framerate=30),
+        CameraMode(width=2592, height=1944, framerate=15),
+    ],
+    "imx296": [CameraMode(width=1456, height=1088, framerate=60)],
+}
+
+# (exposure_min_us, exposure_max_us, gain_min, gain_max) fallback bounds. These
+# are approximations for sensors other than the IMX462; on real hardware the
+# values are read from libcamera and override these.
+_MODEL_BOUNDS: dict[str, tuple[int, int, float, float]] = {
+    "imx290": (MIN_FRAME_US, IMX290_MAX_EXPOSURE_US, 1.0, 31.6),
+    "imx708": (MIN_FRAME_US, 1_000_000, 1.0, 16.0),
+    "imx219": (MIN_FRAME_US, 6_000_000, 1.0, 12.0),
+    "imx477": (MIN_FRAME_US, 200_000_000, 1.0, 16.0),
+    "ov5647": (MIN_FRAME_US, 6_000_000, 1.0, 8.0),
+    "imx296": (MIN_FRAME_US, 100_000, 1.0, 16.0),
+}
+
+
+def _bit_depth_from_format(fmt: Any) -> int | None:
+    """Extract 10/12 from a libcamera format string like ``SRGGB12_CSI2P``."""
+    import re
+
+    match = re.search(r"(\d+)", str(fmt))
+    if not match:
+        return None
+    depth = int(match.group(1))
+    return depth if depth in (10, 12) else None
+
+
+def _fps_bounds(fps: Any) -> tuple[float, float]:
+    if isinstance(fps, (tuple, list)) and len(fps) >= 2:
+        return float(fps[0]), float(fps[1])
+    if isinstance(fps, (int, float)):
+        return float(fps), float(fps)
+    return 0.0, 0.0
+
+
+def _pick_framerate(fps: Any) -> int:
+    _lo, hi = _fps_bounds(fps)
+    for rate in (60, 30, 15):
+        if rate <= hi:
+            return rate
+    return max(1, int(hi))
+
+
+def _read_sensor_modes(picam2: Any) -> list[CameraMode]:
+    """Read supported modes from ``Picamera2.sensor_modes``.
+
+    ``bit_depth`` is only populated for sensors that expose a RAW10/RAW12
+    selector (multiple bit depths); other sensors (e.g. IMX708) leave it
+    ``None`` so ``configure_mode`` omits the field.
+    """
+    raw_modes = getattr(picam2, "sensor_modes", None) or []
+    depths = {_bit_depth_from_format(m.get("format")) for m in raw_modes}
+    depths.discard(None)
+    multi_depth = len(depths) > 1
+    modes: list[CameraMode] = []
+    for m in raw_modes:
+        size = m.get("size")
+        if not size or len(size) < 2:
+            continue
+        width, height = int(size[0]), int(size[1])
+        bit_depth = _bit_depth_from_format(m.get("format")) if multi_depth else None
+        modes.append(
+            CameraMode(width=width, height=height, bit_depth=bit_depth, framerate=_pick_framerate(m.get("fps")))
+        )
+    return modes
+
+
+def read_capabilities(picam2: Any) -> CameraCapabilities:
+    """Read authoritative capabilities (modes + control bounds) from libcamera."""
+    caps = CameraCapabilities(modes=_read_sensor_modes(picam2))
+    controls = getattr(picam2, "camera_controls", None) or {}
+    exposure = controls.get("ExposureTime")
+    gain = controls.get("AnalogueGain")
+    if isinstance(exposure, (tuple, list)) and len(exposure) >= 2:
+        caps.exposure_min_us = int(exposure[0])
+        caps.exposure_max_us = int(exposure[1])
+    if isinstance(gain, (tuple, list)) and len(gain) >= 2:
+        caps.gain_min = float(gain[0])
+        caps.gain_max = float(gain[1])
+    caps.supports_manual_exposure = (
+        "ExposureTime" in controls and "AnalogueGain" in controls
+    )
+    caps.supports_raw12 = any(m.bit_depth == 12 for m in caps.modes)
+    return caps
+
+
+def _modes_for_model(model: str, default_mode: CameraMode | None = None) -> list[CameraMode]:
+    for key, modes in _MODEL_MODES.items():
+        if model and key in model.lower():
+            return list(modes)
+    if default_mode is not None:
+        return [default_mode]
+    return [CameraMode(width=1920, height=1080, bit_depth=12, framerate=60)]
+
+
+def _capabilities_for_model(model: str, default_mode: CameraMode | None = None) -> CameraCapabilities:
+    bounds = None
+    for key, value in _MODEL_BOUNDS.items():
+        if model and key in model.lower():
+            bounds = value
+            break
+    exposure_min, exposure_max, gain_min, gain_max = bounds or (
+        MIN_FRAME_US,
+        IMX290_MAX_EXPOSURE_US,
+        1.0,
+        31.6,
+    )
+    return CameraCapabilities(
+        modes=_modes_for_model(model, default_mode),
+        exposure_min_us=exposure_min,
+        exposure_max_us=exposure_max,
+        gain_min=gain_min,
+        gain_max=gain_max,
+        supports_manual_exposure=True,
+        supports_raw12="imx290" in model.lower(),
+    )
+
+
+def _mode_from_config(mode: Any) -> CameraMode:
+    """Convert a config ``DefaultMode`` to a ``CameraMode``."""
+    return CameraMode(
+        width=mode.width,
+        height=mode.height,
+        bit_depth=mode.bit_depth,
+        framerate=mode.framerate,
+    )
 
 
 class CameraWorker:
@@ -238,10 +422,13 @@ class CameraWorker:
                 controls.pop("AnalogueGain", None)
             if "FrameDurationLimits" not in controls:
                 controls["FrameRate"] = mode.framerate
+            sensor: dict[str, Any] = {"output_size": (mode.width, mode.height)}
+            if mode.bit_depth is not None:
+                sensor["bit_depth"] = mode.bit_depth
             config = self._picam2.create_video_configuration(
                 main={"size": (mode.width, mode.height), "format": "YUV420"},
                 lores={"size": (lw, lh), "format": "YUV420"},
-                sensor={"output_size": (mode.width, mode.height), "bit_depth": mode.bit_depth},
+                sensor=sensor,
                 controls=controls,
                 transform=_transform(self._hflip, self._vflip),
             )
@@ -537,6 +724,7 @@ class CameraManager:
         self._encoder_factory = encoder_factory
         self._mjpeg_encoder_factory = mjpeg_encoder_factory
         self._workers: dict[int, CameraWorker] = {}
+        self._workers_lock = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=max(1, len(config.cameras)))
         self._started_at = time.time()
         self._settings: dict[int, dict[str, Any]] = {}
@@ -551,6 +739,11 @@ class CameraManager:
         while not self._settings_stop.wait(2.0):
             for cam_id, worker in list(self._workers.items()):
                 self._settings[cam_id] = worker.current_settings()
+
+    def _default_mode_for(self, cam: Any) -> CameraMode:
+        """Return the per-camera default mode, falling back to the global one."""
+        configured = cam.default_mode or self._config.default_mode
+        return _mode_from_config(configured)
 
     def discover(self) -> list[CameraInfo]:
         """Enumerate connected cameras (cam0/cam1) and their supported modes."""
@@ -567,12 +760,16 @@ class CameraManager:
 
         for cam in self._config.cameras:
             entry = by_num.get(cam.id, {})
+            model = entry.get("Model", "")
+            default_mode = self._default_mode_for(cam)
             infos.append(
                 CameraInfo(
                     id=cam.id,
                     name=cam.name,
-                    model=entry.get("Model", ""),
-                    modes=_default_modes(),
+                    model=model,
+                    modes=_modes_for_model(model, default_mode),
+                    default_mode=default_mode,
+                    capabilities=_capabilities_for_model(model, default_mode),
                 )
             )
         return infos
@@ -580,30 +777,52 @@ class CameraManager:
     def list_cameras(self) -> list[CameraInfo]:
         return self.discover()
 
+    def capabilities(self, camera_id: int) -> CameraCapabilities:
+        """Read authoritative capabilities from libcamera (opening the camera).
+
+        Falls back to the static per-model catalog if the camera cannot be
+        opened or libcamera is unavailable.
+        """
+        cam = next((c for c in self._config.cameras if c.id == camera_id), None)
+        if cam is None:
+            raise KeyError(f"Camera {camera_id} is not configured")
+        try:
+            worker = self.get_worker(camera_id)
+            caps = read_capabilities(worker._picam2)
+            if caps.modes:
+                return caps
+        except Exception as exc:  # noqa: BLE001 - camera may be absent/busy
+            logger.warning("Capability read failed for %s: %s", cam.name, exc)
+        return _capabilities_for_model(
+            self._model_for(camera_id), self._default_mode_for(cam)
+        )
+
+    def _model_for(self, camera_id: int) -> str:
+        for info in self.discover():
+            if info.id == camera_id:
+                return info.model
+        return ""
+
     def get_worker(self, camera_id: int) -> CameraWorker:
         """Return (creating if necessary) the worker for a configured camera."""
         cam = next((c for c in self._config.cameras if c.id == camera_id), None)
         if cam is None:
             raise KeyError(f"Camera {camera_id} is not configured")
-        if camera_id not in self._workers:
-            picam2 = self._picam2_factory(camera_id)
-            default_mode = CameraMode(
-                width=self._config.default_mode.width,
-                height=self._config.default_mode.height,
-                bit_depth=self._config.default_mode.bit_depth,
-                framerate=self._config.default_mode.framerate,
-            )
-            worker = CameraWorker(
-                camera_id,
-                cam.name,
-                picam2,
-                self._config.capture,
-                default_mode=default_mode,
-                encoder_factory=self._encoder_factory,
-                mjpeg_encoder_factory=self._mjpeg_encoder_factory,
-            )
-            self._workers[camera_id] = worker
-        return self._workers[camera_id]
+        with self._workers_lock:
+            if camera_id not in self._workers:
+                picam2 = self._picam2_factory(camera_id)
+                default_mode = self._default_mode_for(cam)
+                worker = CameraWorker(
+                    camera_id,
+                    cam.name,
+                    picam2,
+                    self._config.capture,
+                    default_mode=default_mode,
+                    encoder_factory=self._encoder_factory,
+                    mjpeg_encoder_factory=self._mjpeg_encoder_factory,
+                )
+                self._workers[camera_id] = worker
+            return self._workers[camera_id]
 
     def configure(self, camera_id: int, mode: CameraMode) -> None:
         worker = self.get_worker(camera_id)
@@ -717,12 +936,3 @@ def _default_mjpeg_encoder_factory(output: Any) -> tuple[Any, Any]:
     from picamera2.outputs import FileOutput
 
     return MJPEGEncoder(), FileOutput(output)
-
-
-def _default_modes() -> list[CameraMode]:
-    return [
-        CameraMode(width=1280, height=720, bit_depth=10, framerate=60),
-        CameraMode(width=1280, height=720, bit_depth=12, framerate=60),
-        CameraMode(width=1920, height=1080, bit_depth=10, framerate=60),
-        CameraMode(width=1920, height=1080, bit_depth=12, framerate=60),
-    ]

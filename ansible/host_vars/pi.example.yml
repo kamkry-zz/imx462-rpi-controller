@@ -1,7 +1,5 @@
 # Example host_vars file. Copy to `host_vars/<inventory-hostname>.yml`
 # (git-ignored) and adjust per target.
-imx462_camera_count: 1          # 1 or 2 cameras
-
 imx462_app_dir: /opt/imx462-controller
 imx462_venv: "{{ imx462_app_dir }}/venv"
 imx462_media_dir: /var/lib/imx462-controller/media
@@ -12,12 +10,27 @@ imx462_config:
   server:
     host: "0.0.0.0"
     port: 8000
+  # Each camera declares the device-tree overlay that drives its sensor and an
+  # optional per-camera default_mode. Modes/exposure bounds are read from
+  # libcamera at runtime; default_mode only needs to match a supported mode.
   cameras:
     - id: 0
       name: "cam0"
-    # For a second camera: set imx462_camera_count: 2 and add:
-    # - id: 1
-    #   name: "cam1"
+      overlay: "imx290"                      # Inno Maker IMX462
+      overlay_params: "clock-frequency=74250000"
+      default_mode:
+        width: 1920
+        height: 1080
+        bit_depth: 12                        # RAW10/RAW12 (imx290 only)
+        framerate: 60
+    # Hybrid: a Raspberry Pi Camera Module 3 (Wide) on cam1.
+    - id: 1
+      name: "cam1"
+      overlay: "imx708"                      # Camera Module 3 / 3 Wide
+      default_mode:
+        width: 2304
+        height: 1296
+        framerate: 30
   default_mode:
     width: 1920
     height: 1080

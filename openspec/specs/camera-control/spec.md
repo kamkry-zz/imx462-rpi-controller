@@ -32,8 +32,9 @@ subsequent capture and streaming operations.
 - **THEN** the system returns an error indicating the camera is unavailable
 
 ### Requirement: Configure sensor mode
-The system SHALL allow a client to set the resolution, RAW bit depth, and
-framerate of a selected camera from its supported modes.
+The system SHALL allow a client to set the resolution, bit depth (where the sensor
+exposes multiple bit depths), and framerate of a selected camera from its
+supported modes.
 
 #### Scenario: Set a supported mode
 - **WHEN** a client sets a supported resolution, bit depth, and framerate
@@ -45,9 +46,9 @@ framerate of a selected camera from its supported modes.
 
 ### Requirement: Exposure controls
 The system SHALL allow a client to enable or disable auto exposure and, when
-disabled, set a manual shutter speed (in 0.3 EV steps from 1/600 s up to 30 s)
-and ISO (in 0.3 EV steps), applying changes at runtime without stopping the live
-view. Shutter speeds up to 30 s are captured natively by the sensor.
+disabled, set a manual shutter speed and ISO (in 0.3 EV steps) within the
+sensor's reported exposure and gain range, applying changes at runtime without
+stopping the live view.
 
 #### Scenario: Manual shutter and ISO applied
 - **WHEN** a client disables auto exposure and sets a shutter speed and ISO
@@ -96,3 +97,18 @@ payload, including while auto exposure is enabled.
 #### Scenario: Current settings reported
 - **WHEN** the camera is running with auto or manual exposure
 - **THEN** the status payload includes the current gain and exposure time
+
+### Requirement: Per-sensor capabilities
+The system SHALL report each camera's sensor model, supported modes, and exposure
+and gain bounds, reading them from libcamera at runtime so heterogeneous sensors
+(e.g. IMX462 and Camera Module 3) each report their own achievable ranges.
+
+#### Scenario: Capabilities exposed per camera
+- **WHEN** a client requests a camera's capabilities
+- **THEN** the system returns that camera's supported modes, minimum and maximum
+  exposure time, and minimum and maximum analogue gain
+
+#### Scenario: Capabilities without hardware
+- **WHEN** libcamera is unavailable or the camera cannot be opened
+- **THEN** the system falls back to a static per-model catalog without erroring
+

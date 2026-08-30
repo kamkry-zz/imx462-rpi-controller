@@ -47,7 +47,8 @@
    ```
    This installs `python3-picamera2`, creates the app venv
    (`--system-site-packages` so picamera2 is importable), renders `config.yaml`
-   and `.env`, installs the systemd unit, and applies the `imx290` dtoverlay.
+   and `.env`, installs the systemd unit, and applies the per-camera dtoverlay
+   (e.g. `imx290` for the IMX462, `imx708` for a Camera Module 3).
 
 3. Reboot to activate the dtoverlay:
    ```sh

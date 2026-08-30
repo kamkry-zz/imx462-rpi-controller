@@ -1,11 +1,4 @@
-# Configuration Specification
-
-## Purpose
-
-Centralize non-secret configuration and secrets, with templates for every
-configurable file.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Load non-secret configuration
 The system SHALL load non-secret configuration values (server, cameras, MQTT
@@ -26,21 +19,3 @@ SHALL declare its device-tree overlay and an optional per-camera default mode.
 - **WHEN** the `config.yaml` is missing or malformed
 - **THEN** the system reports a clear error at startup and does not run with
   partial configuration
-
-### Requirement: Load secrets from environment
-The system SHALL load secrets (e.g. MQTT credentials, tokens) from a local
-`.env` file, which is git-ignored.
-
-#### Scenario: Secrets loaded
-- **WHEN** the system starts with a valid `.env`
-- **THEN** secrets are available to the running application
-
-### Requirement: Templates for all configurable files
-The repository SHALL contain a committed template/example for every configurable
-file (`config.example.yaml`, `.env.example`, Ansible inventory/host_vars
-examples, systemd unit template).
-
-#### Scenario: Templates present
-- **WHEN** a new configurable file or config key is added
-- **THEN** a corresponding committed example/template exists
-

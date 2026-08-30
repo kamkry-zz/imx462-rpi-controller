@@ -16,7 +16,12 @@
     enabled: true
     state: started
 
+- name: Determine if an imx290 (IMX462) camera is configured
+  set_fact:
+    imx462_has_imx290: "{{ (imx462_cameras | selectattr('overlay', 'equalto', 'imx290') | list | length) > 0 }}"
+
 - name: Install vendor camera tuning file (replaces imx290.json for correct IMX462 colour)
+  when: imx462_has_imx290
   block:
     - name: Back up stock imx290 tuning file
       copy:
