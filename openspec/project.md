@@ -12,8 +12,10 @@ REST API, with MQTT telemetry and OpenTelemetry observability. Deployed with Ans
 
 ## Tech stack
 - Language: **Python** (Raspberry Pi OS ships Python 3.11–3.13 depending on release).
-- Camera: **Picamera2** (libcamera Python binding). Vendor enumerates the IMX462
-  through the `imx290` device-tree overlay (see Hardware below).
+- Camera: **Picamera2** (libcamera Python binding). Sensors are enumerated
+  through their device-tree overlay: the IMX462 via `imx290`, the Raspberry Pi
+  Camera Module 3 / 3 Wide via `imx708`, plus `imx219`/`imx477`/`ov5647`/`imx296`
+  (see Hardware below).
 - API: **REST (JSON)** via **FastAPI** + **uvicorn**. SOAP and gRPC are explicitly
   rejected; MQTT is used for telemetry only, never for request/response.
 - Concurrency: **thread-per-camera** (one `Picamera2` instance per camera in its own
@@ -28,9 +30,13 @@ REST API, with MQTT telemetry and OpenTelemetry observability. Deployed with Ans
 
 ## Hardware gotchas (do not re-derive)
 - The IMX462 is driven via the **`imx290`** overlay, NOT `imx462`:
-  `dtoverlay=imx290,clock-frequency=74250000,cam0` (and `cam1` for the second camera)
-  appended to `/boot/firmware/config.txt` (Pi 5 path; legacy uses `/boot/config.txt`).
-- Supported modes: RAW10/RAW12 at 1280x720@60 and 1920x1080@60.
+  `dtoverlay=imx290,clock-frequency=74250000,cam0` appended to
+  `/boot/firmware/config.txt` (Pi 5 path; legacy uses `/boot/config.txt`).
+- Supported modes (IMX462-specific): RAW10/RAW12 at 1280x720@60 and 1920x1080@60.
+- Heterogeneous sensors are supported: each configured camera declares its own
+  overlay (`imx290`, `imx708` for the Camera Module 3 / 3 Wide, `imx219`, `imx477`,
+  `ov5647`, `imx296`). Modes and exposure/gain bounds are read from libcamera at
+  runtime (`Picamera2.sensor_modes` / `camera_controls`).
 - Verify with `rpicam-hello --list-cameras` after reboot.
 
 ## Configuration & secrets

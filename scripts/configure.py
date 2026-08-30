@@ -77,6 +77,18 @@ _INT_KEYS = {
     "mqtt_port",
 }
 
+# Supported sensor overlays. ``default_mode`` is used unless the overlay has its
+# own static mode (``None`` means "use the global mode_* answers"). The IMX462 is
+# driven via the imx290 overlay.
+OVERLAYS: dict[str, dict[str, Any]] = {
+    "imx290": {"params": "clock-frequency=74250000", "default_mode": None},
+    "imx708": {"params": "", "default_mode": {"width": 2304, "height": 1296, "framerate": 30}},
+    "imx219": {"params": "", "default_mode": {"width": 1920, "height": 1080, "framerate": 30}},
+    "imx477": {"params": "", "default_mode": {"width": 2028, "height": 1080, "framerate": 50}},
+    "ov5647": {"params": "", "default_mode": {"width": 1920, "height": 1080, "framerate": 30}},
+    "imx296": {"params": "", "default_mode": {"width": 1456, "height": 1088, "framerate": 60}},
+}
+
 
 def default_answers() -> dict[str, Any]:
     return {
@@ -85,6 +97,8 @@ def default_answers() -> dict[str, Any]:
         "ssh_user": "root",
         "service_user": "user",
         "camera_count": 1,
+        "camera0_overlay": "imx290",
+        "camera1_overlay": "imx708",
         "app_dir": "/opt/imx462-controller",
         "media_dir": "/var/lib/imx462-controller/media",
         "server_host": "0.0.0.0",
@@ -186,6 +200,18 @@ def collect_answers(answers_file: str | None) -> dict[str, Any]:
     a["ssh_user"] = _ask("SSH user for Ansible", a["ssh_user"])
     a["service_user"] = _ask("systemd service user", a["service_user"])
     a["camera_count"] = _ask("Number of cameras (1 or 2)", a["camera_count"], validate=_int_in_range(1, 2))
+    overlay_choices = {k: k for k in OVERLAYS}
+    a["camera0_overlay"] = _ask(
+        "cam0 sensor overlay (imx290=IMX462, imx708=Camera Module 3, ...)",
+        a["camera0_overlay"],
+        validate=_one_of(overlay_choices),
+    )
+    if int(a["camera_count"]) >= 2:
+        a["camera1_overlay"] = _ask(
+            "cam1 sensor overlay (imx290=IMX462, imx708=Camera Module 3, ...)",
+            a["camera1_overlay"],
+            validate=_one_of(overlay_choices),
+        )
 
     print()
     print(_style("── Paths ─────────────────────────────────────────────────", _CYAN, _BOLD))
@@ -228,12 +254,29 @@ def collect_answers(answers_file: str | None) -> dict[str, Any]:
 # Rendering (pure functions, unit-tested)
 # ---------------------------------------------------------------------------
 
+def _camera_entry(camera_id: int, overlay: str, name: str, answers: dict[str, Any]) -> dict[str, Any]:
+    """Build a single camera entry for ``imx462_config.cameras``."""
+    spec = OVERLAYS[overlay]
+    entry: dict[str, Any] = {"id": camera_id, "name": name, "overlay": overlay}
+    if spec["params"]:
+        entry["overlay_params"] = spec["params"]
+    default_mode = spec["default_mode"]
+    if default_mode is None:
+        default_mode = {
+            "width": int(answers["mode_width"]),
+            "height": int(answers["mode_height"]),
+            "bit_depth": int(answers["mode_bit_depth"]),
+            "framerate": int(answers["mode_framerate"]),
+        }
+    entry["default_mode"] = dict(default_mode)
+    return entry
+
+
 def _host_vars_dict(answers: dict[str, Any]) -> dict[str, Any]:
-    cameras = [{"id": 0, "name": "cam0"}]
+    cameras = [_camera_entry(0, answers["camera0_overlay"], "cam0", answers)]
     if int(answers["camera_count"]) >= 2:
-        cameras.append({"id": 1, "name": "cam1"})
+        cameras.append(_camera_entry(1, answers["camera1_overlay"], "cam1", answers))
     return {
-        "imx462_camera_count": int(answers["camera_count"]),
         "imx462_app_dir": answers["app_dir"],
         "imx462_venv": "{{ imx462_app_dir }}/venv",
         "imx462_media_dir": answers["media_dir"],
@@ -363,7 +406,6 @@ def render_inventory(answers: dict[str, Any]) -> str:
         "\n"
         "[imx462:vars]\n"
         "ansible_python_interpreter=/usr/bin/python3\n"
-        f"imx462_camera_count={int(answers['camera_count'])}\n"
     )
 
 
@@ -414,12 +456,15 @@ def write_outputs(
 # ---------------------------------------------------------------------------
 
 def _print_summary(answers: dict[str, Any]) -> None:
+    camera_summary = f"cam0={answers['camera0_overlay']}"
+    if int(answers["camera_count"]) >= 2:
+        camera_summary += f", cam1={answers['camera1_overlay']}"
     rows = [
         ("hostname", answers["target_host"]),
         ("address", answers["target_ip"] or answers["target_host"]),
         ("ssh user", answers["ssh_user"]),
         ("service user", answers["service_user"]),
-        ("cameras", answers["camera_count"]),
+        ("cameras", camera_summary),
         ("mode", f"{answers['mode_width']}x{answers['mode_height']} RAW{answers['mode_bit_depth']} @{answers['mode_framerate']}fps"),
         ("media dir", answers["media_dir"]),
         ("mqtt", answers["mqtt_host"] or "disabled"),

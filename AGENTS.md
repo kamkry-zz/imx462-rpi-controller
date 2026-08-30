@@ -5,10 +5,21 @@ of truth for planning; `openspec/project.md` holds the full stack/domain context
 
 ## Hardware (hard-won — do not re-derive)
 - The Inno Maker IMX462 is driven via the **`imx290`** overlay, not `imx462`:
-  `dtoverlay=imx290,clock-frequency=74250000,cam0` (add `cam1` for the second camera).
-  Append to `/boot/firmware/config.txt` on Pi 5 (`/boot/config.txt` on legacy), then
+  `dtoverlay=imx290,clock-frequency=74250000,cam0`. Append to
+  `/boot/firmware/config.txt` on Pi 5 (`/boot/config.txt` on legacy), then
   `sudo reboot`. Verify with `rpicam-hello --list-cameras`.
 - Sensor modes: RAW10/RAW12 at `1280x720@60` and `1920x1080@60`.
+- **Heterogeneous cameras** are supported: each configured camera declares its own
+  device-tree overlay in `config.yaml` (`imx290` for the IMX462, `imx708` for the
+  Camera Module 3 / 3 Wide, plus `imx219`/`imx477`/`ov5647`/`imx296`). The Ansible
+  `camera-overlay` role writes one `dtoverlay=...,camN` line per camera and removes
+  stale lines for unconfigured slots, so switching cam1 from `imx290` to `imx708` is
+  handled by a re-run + reboot.
+- Supported modes and exposure/gain bounds are **read from libcamera at runtime**
+  (`Picamera2.sensor_modes` / `camera_controls`) and surfaced via
+  `GET /api/cameras/{id}/capabilities`; a static per-model catalog is only a fallback
+  for no-hardware/test environments. `bit_depth` is only passed to the sensor for
+  multi-bit-depth RAW sensors (imx290); the IMX708 (10-bit only) omits it.
 - Target: Raspberry Pi OS **Bookworm (Debian 12) / Trixie (Debian 13)** (libcamera +
   Picamera2). Supports Pi 3/4/5. Bullseye/legacy `picamera` stack is out of scope.
 - Raspberry Pi OS ships no system `pip` (externally-managed env): run the app in a
@@ -42,6 +53,9 @@ of truth for planning; `openspec/project.md` holds the full stack/domain context
   reachable endpoint (Gateway/NodePort), not a `*.svc` name.
 
 ## Camera controls & hardware limits (hard-won — do not re-derive)
+- **IMX462-specific ranges.** The ~115 s native exposure and ISO 100–3200 figures
+  below apply to the IMX290/IMX462 only; other sensors (e.g. the Camera Module 3
+  IMX708) expose their own bounds, read from libcamera via `/api/cameras/{id}/capabilities`.
 - **Native exposure range up to ~115 s** — the IMX290/IMX462 24-bit `VMAX`
   register plus adjustable `HMAX` lets libcamera expose a single-frame exposure
   of ~115 s (verified: `ExposureTime` control max ≈ 115686258 µs at 1080p). The

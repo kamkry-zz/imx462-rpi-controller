@@ -36,7 +36,7 @@ flowchart TB
             FFMPEG["ffmpeg\n(h264 → mp4 remux)"]
         end
         MEDIA["Media dir\n(/var/lib/imx462-controller/media)"]
-        SENSOR["IMX462 sensor(s)\ndtoverlay=imx290 (cam0/cam1)"]
+        SENSOR["Sensors\nper-camera dtoverlay (imx290 / imx708 / ...)"]
     end
 
     BROKER["MQTT broker\n(external, host+creds in .env)"]
@@ -71,12 +71,12 @@ flowchart TB
 | Component | Responsibility | Key tech |
 |---|---|---|
 | FastAPI app | REST API, static frontend, MJPEG, WebSocket, assets | FastAPI, uvicorn |
-| Camera workers | One per camera; photo/video capture, mode/flip, exposure/ISO/WB | Picamera2, thread-per-camera |
+| Camera workers | One per camera; photo/video capture, mode/flip, exposure/ISO/WB, per-sensor capability discovery | Picamera2, thread-per-camera |
 | MJPEG fan-out | Persistent `lores` MJPEG encoder + feed thread → per-client queues | MJPEGEncoder, threading |
 | Settings poll | Read current gain/exposure via `capture_metadata()` for the status payload | background thread |
 | Assets | List/download/delete captured media with metadata | `FileResponse`, traversal-safe |
 | ffmpeg remux | Convert recorded raw H.264 → `.mp4` (`-c copy`) | `/usr/bin/ffmpeg` |
-| Snapshot | Single still at the requested exposure (up to ~115 s native) | numpy + Pillow |
+| Snapshot | Single still at the requested exposure (up to ~115 s native on the IMX462; other sensors use their own libcamera-reported bounds) | numpy + Pillow |
 | Setup configurator | Interactive ASCII/color CLI generating the git-ignored Ansible inventory + host_vars (secrets masked) | `scripts/configure.py`, stdlib-only |
 | MQTT client | Publish operation events, heartbeat/status, metrics | paho-mqtt |
 | OTel SDK | Metrics + traces + correlated logs to OTLP | opentelemetry-distro |

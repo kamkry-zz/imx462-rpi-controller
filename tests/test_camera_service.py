@@ -7,6 +7,7 @@ from imx462_controller.camera.service import (
     CameraMode,
     CameraWorker,
     _StreamingOutput,
+    read_capabilities,
 )
 from imx462_controller.config import AppConfig, CameraConfig, CaptureConfig
 
@@ -22,6 +23,14 @@ class FakePicamera2:
         self.encoder_stopped = []
         self.frames = [b"\xff\xd8fakejpeg"]
         self.metadata = {"AnalogueGain": 2.0, "ExposureTime": 33333, "SensorTimestamp": 0}
+        self.camera_controls = {
+            "ExposureTime": (16666, 115686258, 33333),
+            "AnalogueGain": (1.0, 31.6, 1.0),
+        }
+        self.sensor_modes = [
+            {"size": (1280, 720), "format": "SRGGB10_CSI2P", "fps": (0.1, 60.0)},
+            {"size": (1920, 1080), "format": "SRGGB12_CSI2P", "fps": (0.1, 60.0)},
+        ]
 
     def create_video_configuration(
         self, main=None, lores=None, sensor=None, controls=None, transform=None
@@ -456,3 +465,40 @@ def test_snapshot_native_long_exposure(capture_config, tmp_path):
     assert path.suffix == ".jpg"
     assert path.exists()
     assert fake.controls["ExposureTime"] == 30000000
+
+
+def test_read_capabilities_reads_modes_and_bounds():
+    fake = FakePicamera2()
+    caps = read_capabilities(fake)
+    assert caps.exposure_min_us == 16666
+    assert caps.exposure_max_us == 115686258
+    assert caps.gain_min == 1.0
+    assert caps.gain_max == 31.6
+    assert caps.supports_raw12 is True
+    assert {m.width for m in caps.modes} == {1280, 1920}
+
+
+def test_read_capabilities_single_bit_depth_omits_bit_depth():
+    fake = FakePicamera2()
+    fake.sensor_modes = [
+        {"size": (1536, 864), "format": "SRGGB10_CSI2P", "fps": (0.1, 60.0)},
+        {"size": (2304, 1296), "format": "SRGGB10_CSI2P", "fps": (0.1, 56.0)},
+    ]
+    caps = read_capabilities(fake)
+    assert caps.supports_raw12 is False
+    assert all(m.bit_depth is None for m in caps.modes)
+
+
+def test_manager_capabilities_opens_camera(app_config):
+    manager = CameraManager(app_config, picam2_factory=FakePicamera2)
+    caps = manager.capabilities(0)
+    assert caps.exposure_max_us == 115686258
+    assert caps.supports_raw12 is True
+
+
+def test_configure_mode_omits_bit_depth_when_none(capture_config):
+    fake = FakePicamera2()
+    worker = CameraWorker(0, "cam0", fake, capture_config)
+    worker.configure_mode(CameraMode(width=2304, height=1296, bit_depth=None, framerate=30))
+    assert "bit_depth" not in fake.config["sensor"]
+    assert fake.config["sensor"]["output_size"] == (2304, 1296)

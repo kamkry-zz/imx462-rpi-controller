@@ -18,6 +18,8 @@ def test_default_answers():
     assert a["camera_count"] == 1
     assert a["ssh_user"] == "root"
     assert a["mode_bit_depth"] == 12
+    assert a["camera0_overlay"] == "imx290"
+    assert a["camera1_overlay"] == "imx708"
 
 
 def test_render_inventory():
@@ -26,7 +28,7 @@ def test_render_inventory():
     inv = configure.render_inventory(a)
     assert "[imx462]" in inv
     assert "cam-server ansible_host=192.168.1.50 ansible_user=root" in inv
-    assert "imx462_camera_count=2" in inv
+    assert "ansible_python_interpreter=/usr/bin/python3" in inv
 
 
 def test_render_inventory_uses_hostname_when_no_ip():
@@ -45,9 +47,15 @@ def test_render_host_vars_yaml_valid_two_cameras():
         mqtt_password="s3cret",
     )
     doc = yaml.safe_load(configure.render_host_vars(a))
-    assert doc["imx462_camera_count"] == 2
-    assert [c["name"] for c in doc["imx462_config"]["cameras"]] == ["cam0", "cam1"]
-    assert [c["id"] for c in doc["imx462_config"]["cameras"]] == [0, 1]
+    cameras = doc["imx462_config"]["cameras"]
+    assert [c["name"] for c in cameras] == ["cam0", "cam1"]
+    assert [c["id"] for c in cameras] == [0, 1]
+    assert cameras[0]["overlay"] == "imx290"
+    assert cameras[0]["overlay_params"] == "clock-frequency=74250000"
+    assert cameras[0]["default_mode"]["bit_depth"] == 12
+    assert cameras[1]["overlay"] == "imx708"
+    assert "bit_depth" not in cameras[1]["default_mode"]
+    assert cameras[1]["default_mode"]["width"] == 2304
     assert doc["imx462_config"]["default_mode"]["bit_depth"] == 12
     assert doc["imx462_config"]["server"]["port"] == 8000
     assert doc["imx462_config"]["otel"]["endpoint"] == "http://otel:4318"
@@ -61,7 +69,6 @@ def test_render_host_vars_single_camera():
     a = configure.default_answers()
     doc = yaml.safe_load(configure.render_host_vars(a))
     assert [c["name"] for c in doc["imx462_config"]["cameras"]] == ["cam0"]
-    assert doc["imx462_camera_count"] == 1
 
 
 def test_scalar_quoting():
@@ -104,10 +111,13 @@ def test_cli_with_answers_file(tmp_path):
 
     inv = (out / "inventory.ini").read_text()
     assert "cam-server" in inv
-    assert "imx462_camera_count=2" in inv
+    assert "ansible_python_interpreter=/usr/bin/python3" in inv
 
     hv = yaml.safe_load((out / "host_vars" / "cam-server.yml").read_text())
-    assert hv["imx462_camera_count"] == 2
+    cameras = hv["imx462_config"]["cameras"]
+    assert [c["id"] for c in cameras] == [0, 1]
+    assert cameras[0]["overlay"] == "imx290"
+    assert cameras[1]["overlay"] == "imx708"
     assert hv["imx462_env"]["MQTT_PASSWORD"] == "s3cret"
 
 

@@ -4,6 +4,8 @@ const state = {
   cameras: [],
   selectedId: null,
   defaultMode: null,
+  cameraDefaultMode: null,
+  caps: null,
   recording: false,
   singleMode: false,
   capturing: false,
@@ -138,29 +140,45 @@ function currentShutterList() {
   return el.flicker.value in SHUTTER_LISTS ? SHUTTER_LISTS[el.flicker.value] : SHUTTER_LISTS.off;
 }
 
+function capsBounds() {
+  const c = state.caps || {};
+  return {
+    minUs: c.exposure_min_us != null ? c.exposure_min_us : 0,
+    maxUs: c.exposure_max_us != null ? c.exposure_max_us : MAX_NATIVE_EXPOSURE_US,
+    gainMin: c.gain_min != null ? c.gain_min : 1.0,
+    gainMax: c.gain_max != null ? c.gain_max : 31.6,
+  };
+}
+
 function populateShutter() {
   const list = currentShutterList();
+  const { minUs, maxUs } = capsBounds();
+  const filtered = list.filter(([, us]) => us >= minUs && us <= maxUs);
+  const options = filtered.length ? filtered : list;
   const prev = el.shutter.value;
   el.shutter.innerHTML = "";
-  for (const [label, us] of list) {
+  for (const [label, us] of options) {
     const opt = document.createElement("option");
     opt.value = String(us);
     opt.textContent = label;
     el.shutter.appendChild(opt);
   }
-  el.shutter.value = list.some(([, us]) => String(us) === prev) ? prev : String(list[0][1]);
+  el.shutter.value = options.some(([, us]) => String(us) === prev) ? prev : String(options[0][1]);
 }
 
 function populateIso() {
+  const { gainMin, gainMax } = capsBounds();
+  const steps = ISO_STEPS.filter(([, gain]) => gain >= gainMin - 1e-9 && gain <= gainMax + 0.5);
+  const options = steps.length ? steps : ISO_STEPS;
   const prev = el.iso.value;
   el.iso.innerHTML = "";
-  for (const [iso] of ISO_STEPS) {
+  for (const [iso] of options) {
     const opt = document.createElement("option");
     opt.value = String(iso);
     opt.textContent = String(iso);
     el.iso.appendChild(opt);
   }
-  el.iso.value = ISO_STEPS.some(([iso]) => String(iso) === prev) ? prev : "100";
+  el.iso.value = options.some(([iso]) => String(iso) === prev) ? prev : String(options[0][0]);
 }
 
 function gainForIso(iso) {
@@ -252,8 +270,8 @@ function populateModes(camera) {
 }
 
 function selectDefaultMode() {
-  if (!state.defaultMode) return;
-  const target = JSON.stringify(state.defaultMode);
+  const target = JSON.stringify(state.cameraDefaultMode || state.defaultMode);
+  if (!target || target === "null") return;
   for (const opt of el.modeSelect.options) {
     if (opt.value === target) {
       el.modeSelect.value = target;
@@ -266,10 +284,35 @@ function selectCamera(id) {
   state.selectedId = id;
   const camera = state.cameras.find((c) => c.id === id);
   if (!camera) return;
+  state.caps = camera.capabilities || null;
+  state.cameraDefaultMode = camera.default_mode || state.defaultMode;
   populateModes(camera);
   selectDefaultMode();
+  populateShutter();
+  populateIso();
   setStreamSrc(`/api/cameras/${id}/stream?t=${Date.now()}`);
   applyMode();
+  refreshCapabilities(id);
+}
+
+async function refreshCapabilities(id) {
+  try {
+    const caps = await api(`/api/cameras/${id}/capabilities`);
+    state.caps = caps;
+    const camera = state.cameras.find((c) => c.id === id);
+    if (camera) {
+      camera.capabilities = caps;
+      camera.modes = caps.modes;
+    }
+    if (state.selectedId === id && camera) {
+      populateModes(camera);
+      selectDefaultMode();
+      populateShutter();
+      populateIso();
+    }
+  } catch (err) {
+    // Fall back to the static per-model capabilities already applied.
+  }
 }
 
 function setStreamSrc(url) {
@@ -499,7 +542,7 @@ async function applyControls() {
   if (!ae) {
     const shutterUs = Number.parseInt(el.shutter.value, 10);
     if (!Number.isNaN(shutterUs) && shutterUs > 0) {
-      const nativeUs = Math.min(shutterUs, MAX_NATIVE_EXPOSURE_US);
+      const nativeUs = Math.min(shutterUs, capsBounds().maxUs);
       const frameUs = Math.max(nativeUs, MIN_FRAME_US);
       controls.ExposureTime = nativeUs;
       controls.FrameDurationLimits = [frameUs, frameUs];

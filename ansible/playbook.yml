@@ -6,5 +6,5 @@
   roles:
     - role: camera-overlay
       vars:
-        camera_count: "{{ imx462_camera_count }}"
+        imx462_cameras: "{{ imx462_config.cameras }}"
     - role: app

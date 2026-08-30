@@ -9,7 +9,10 @@ Deployed with Ansible.
 
 ## Features
 
-- One or two IMX462 cameras (`cam0`/`cam1`) via the `imx290` dtoverlay
+- One or two cameras (`cam0`/`cam1`), heterogeneous sensors supported — the
+  IMX462 via the `imx290` dtoverlay and Raspberry Pi Camera Modules (e.g. Camera
+  Module 3 / 3 Wide via `imx708`) via their own overlays, each with per-camera
+  modes and exposure/gain bounds read from libcamera
 - MJPEG live view + WebSocket status push (current ISO/shutter, clients)
 - Stills, video (H.264 → MP4 remux via ffmpeg), and long-exposure
   single-frame captures (1–30 s, native sensor exposures up to ~115 s)

@@ -24,16 +24,19 @@ class ServerConfig(BaseModel):
     port: int = 8000
 
 
-class CameraConfig(BaseModel):
-    id: int
-    name: str
-
-
 class DefaultMode(BaseModel):
     width: int = 1920
     height: int = 1080
-    bit_depth: int = 12  # RAW10 or RAW12
+    bit_depth: int | None = None  # RAW10/RAW12 (imx290); None for sensors without a selector
     framerate: int = 60
+
+
+class CameraConfig(BaseModel):
+    id: int
+    name: str
+    overlay: str = "imx290"  # device-tree overlay driving this sensor (imx290/imx708/...)
+    overlay_params: str = ""  # extra dtoverlay parameters (e.g. clock-frequency=74250000)
+    default_mode: DefaultMode | None = None  # per-camera mode override (falls back to global)
 
 
 class CaptureConfig(BaseModel):
