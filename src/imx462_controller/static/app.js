@@ -312,6 +312,7 @@ async function refreshCapabilities(id) {
     }
   } catch (err) {
     // Fall back to the static per-model capabilities already applied.
+    console.warn("Capabilities refresh failed; using static per-model capabilities:", err);
   }
 }
 
