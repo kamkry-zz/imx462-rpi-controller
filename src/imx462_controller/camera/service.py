@@ -266,11 +266,14 @@ class CameraWorker:
                 self._ensure_started()
 
     def set_controls(self, controls: dict[str, Any]) -> None:
-        """Apply libcamera controls at runtime without disturbing the stream.
+        """Apply libcamera controls, reconfiguring when the frame duration changes.
 
-        Controls are stored so a later mode change re-applies them, and applied
-        immediately via ``set_controls`` (no reconfigure, so live view keeps
-        flowing). Frame-duration changes are sent explicitly by the frontend.
+        Controls are stored so a later mode change re-applies them. Ordinary
+        control changes go through runtime ``set_controls`` (no reconfigure, so
+        live view keeps flowing). A frame-duration change, however, would stall
+        behind ~10 in-flight frames — minutes at long exposures — so it is baked
+        in via ``configure_mode`` instead (the same path the snapshot capture
+        uses), making the change take effect on the next frame.
         """
         with self._lock, tracer.start_as_current_span("camera.set_controls"):
             normalized = _sanitize_controls(controls)
@@ -279,13 +282,28 @@ class CameraWorker:
             self._controls.update(normalized)
             if not self._started:
                 self._ensure_started()
+            elif "FrameDurationLimits" in normalized and self._mode is not None:
+                self.configure_mode(self._mode)
             else:
                 self._picam2.set_controls(normalized)
             logger.info("Camera %s controls set: %s", self._name, normalized)
 
     def current_settings(self) -> dict[str, Any]:
-        """Return the latest gain/exposure read by the background metadata thread."""
-        return dict(self._metadata)
+        """Return the latest gain/exposure read by the background metadata thread.
+
+        When exposure is manual (``AeEnable`` off) and the frame duration
+        exceeds 1 s the metadata thread is paused, so the raw metadata would go
+        stale exactly when callers need it most. The last-applied manual
+        controls are merged in instead; auto-exposure keeps using metadata.
+        """
+        settings = dict(self._metadata)
+        controls = self._controls
+        if controls.get("AeEnable") is False:
+            if controls.get("ExposureTime") is not None:
+                settings["exposure_time"] = int(controls["ExposureTime"])
+            if controls.get("AnalogueGain") is not None:
+                settings["analogue_gain"] = float(controls["AnalogueGain"])
+        return settings
 
     def _metadata_loop(self) -> None:
         """Continuously read current gain/exposure (never blocks callers).

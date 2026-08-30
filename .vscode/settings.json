@@ -1,0 +1,6 @@
+{
+    "sonarlint.connectedMode.project": {
+        "connectionId": "https-sonarqube-theit-cc",
+        "projectKey": "kamkry-zz_imx462-rpi-controller_959a75ba-70f3-4230-8762-55f97d4d38a1"
+    }
+}

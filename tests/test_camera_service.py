@@ -215,7 +215,7 @@ def test_set_controls_runtime_for_non_timing(capture_config):
     assert fake.controls["Brightness"] == 0.1
 
 
-def test_set_controls_applies_exposure_at_runtime(capture_config):
+def test_set_controls_applies_long_exposure_via_reconfigure(capture_config):
     fake = FakePicamera2()
     default = CameraMode(width=1920, height=1080, bit_depth=12, framerate=60)
     worker = CameraWorker(0, "cam0", fake, capture_config, default_mode=default)
@@ -224,8 +224,11 @@ def test_set_controls_applies_exposure_at_runtime(capture_config):
     worker.set_controls(
         {"AeEnable": False, "ExposureTime": 10000000, "FrameDurationLimits": [10000000, 10000000]}
     )
-    assert fake.controls["ExposureTime"] == 10000000
-    assert fake.controls["FrameDurationLimits"] == (10000000, 10000000)
+    # Long exposures must be baked via reconfigure so the change does not stall
+    # behind ~10 in-flight frames (minutes at a 10s frame rate).
+    assert fake.controls is None
+    assert fake.config["controls"]["ExposureTime"] == 10000000
+    assert fake.config["controls"]["FrameDurationLimits"] == (10000000, 10000000)
 
 
 def test_configure_mode_sets_framerate_by_default(capture_config):
@@ -359,6 +362,54 @@ def test_current_settings_empty_when_not_started(capture_config):
     fake = FakePicamera2()
     worker = CameraWorker(0, "cam0", fake, capture_config)
     assert worker.current_settings() == {}
+
+
+def test_set_controls_with_frame_duration_reconfigures(capture_config):
+    fake = FakePicamera2()
+    default = CameraMode(width=1920, height=1080, bit_depth=12, framerate=60)
+    worker = CameraWorker(0, "cam0", fake, capture_config, default_mode=default)
+    worker.configure_mode(default)
+    worker.set_controls(
+        {
+            "AeEnable": False,
+            "ExposureTime": 500000,
+            "AnalogueGain": 2.0,
+            "FrameDurationLimits": [500000, 500000],
+        }
+    )
+    # A frame-duration change is baked via reconfigure, not runtime set_controls.
+    assert fake.controls is None
+    assert fake.config["controls"]["FrameDurationLimits"] == (500000, 500000)
+    assert fake.config["controls"]["ExposureTime"] == 500000
+
+
+def test_set_controls_without_frame_duration_uses_runtime(capture_config):
+    fake = FakePicamera2()
+    default = CameraMode(width=1920, height=1080, bit_depth=12, framerate=60)
+    worker = CameraWorker(0, "cam0", fake, capture_config, default_mode=default)
+    worker.configure_mode(default)
+    worker.set_controls({"AeFlickerPeriod": 10000})
+    assert fake.controls == {"AeFlickerPeriod": 10000}
+
+
+def test_current_settings_merges_manual_controls_when_metadata_paused(capture_config):
+    fake = FakePicamera2()
+    default = CameraMode(width=1920, height=1080, bit_depth=12, framerate=60)
+    worker = CameraWorker(0, "cam0", fake, capture_config, default_mode=default)
+    worker.configure_mode(default)
+    worker.set_controls(
+        {
+            "AeEnable": False,
+            "ExposureTime": 500000,
+            "AnalogueGain": 2.5,
+            "FrameDurationLimits": [500000, 500000],
+        }
+    )
+    # At >1s frame durations the metadata thread is paused; the applied manual
+    # controls must be surfaced instead of stale metadata.
+    settings = worker.current_settings()
+    assert settings["exposure_time"] == 500000
+    assert settings["analogue_gain"] == 2.5
 
 
 def test_stream_mode_single_stops_encoder(capture_config):
