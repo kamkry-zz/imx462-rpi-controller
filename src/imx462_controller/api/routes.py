@@ -105,6 +105,16 @@ def camera_status(camera_id: int, request: Request):
     }
 
 
+@router.get("/cameras/{camera_id}/settings", responses=_CAMERA_ERROR_RESPONSES)
+def camera_settings(camera_id: int, request: Request):
+    manager = _manager(request)
+    try:
+        worker = manager.get_worker(camera_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Camera {camera_id} not found")
+    return worker.current_settings()
+
+
 @router.put("/cameras/{camera_id}/mode", responses=_CAMERA_ERROR_RESPONSES)
 def set_mode(camera_id: int, body: ModeRequest, request: Request):
     manager = _manager(request)

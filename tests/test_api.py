@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -123,6 +124,27 @@ def test_recording_start_stop(client):
 
 def test_unknown_camera_returns_404(client):
     assert client.post("/api/cameras/99/photo").status_code == 404
+
+
+def test_camera_settings(client):
+    client.put(
+        "/api/cameras/0/mode",
+        json={"width": 1920, "height": 1080, "bit_depth": 12, "framerate": 60},
+    )
+    # Settings are read by a background metadata thread; wait for the first read.
+    res = client.get("/api/cameras/0/settings")
+    for _ in range(50):
+        if res.json().get("analogue_gain") is not None:
+            break
+        time.sleep(0.1)
+        res = client.get("/api/cameras/0/settings")
+    assert res.status_code == 200
+    assert "analogue_gain" in res.json()
+    assert "exposure_time" in res.json()
+
+
+def test_unknown_camera_settings_returns_404(client):
+    assert client.get("/api/cameras/99/settings").status_code == 404
 
 
 def test_config_endpoint(client):
