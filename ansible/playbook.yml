@@ -3,8 +3,9 @@
   hosts: imx462
   become: true
 
+  vars:
+    imx462_cameras: "{{ imx462_config.cameras }}"
+
   roles:
     - role: camera-overlay
-      vars:
-        imx462_cameras: "{{ imx462_config.cameras }}"
     - role: app
