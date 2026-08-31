@@ -1,11 +1,13 @@
 # IMX462 RPi Controller
 
 Controller software for the **Inno Maker IMX462** (Sony STARVIS) camera on a
-Raspberry Pi (Pi 3/4/5, Raspberry Pi OS **Bookworm/Trixie**). API-first FastAPI
+Raspberry Pi (Pi 3/4/5 and Pi Zero 2 W, Raspberry Pi OS **Bookworm/Trixie**).
+API-first FastAPI
 application with a thin web frontend: live MJPEG view, stills, video,
 full exposure/ISO/white-balance control, long exposures up to ~30 s with a
 single-frame capture mode, MQTT telemetry, and OpenTelemetry observability.
-Deployed with Ansible.
+Deployed with Ansible (platform-aware: camera-overlay and tuning steps adapt to
+the Pi 5 pisp pipeline vs. previous-gen csi boards automatically).
 
 ## Features
 

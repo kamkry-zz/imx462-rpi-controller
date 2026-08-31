@@ -8,6 +8,12 @@ of truth for planning; `openspec/project.md` holds the full stack/domain context
   `dtoverlay=imx290,clock-frequency=74250000,cam0`. Append to
   `/boot/firmware/config.txt` on Pi 5 (`/boot/config.txt` on legacy), then
   `sudo reboot`. Verify with `rpicam-hello --list-cameras`.
+  **Platform-dependent `camN` suffix**: on the csi platform (Pi 2/3B+/Zero 2W)
+  the `imx290` overlay defaults to **Unicam 1 — the standard camera connector**,
+  and `cam0` would select the Compute Module CSI0 layout instead (empty bus →
+  `Error writing reg 0x3000: -5`; verified on `raspberrypi-zero-2w-1`). The
+  Ansible `camera-overlay` role emits the suffix only on Pi 5 (pisp), where
+  `cam0`/`cam1` select the RP1 CSI ports.
 - Sensor modes: RAW10/RAW12 at `1280x720@60` and `1920x1080@60`.
 - **Heterogeneous cameras** are supported: each configured camera declares its own
   device-tree overlay in `config.yaml` (`imx290` for the IMX462, `imx708` for the
@@ -40,6 +46,15 @@ of truth for planning; `openspec/project.md` holds the full stack/domain context
   `MJPEGEncoder`. This keeps live view and recording/photo independent. Video
   records raw H.264 then **remuxes to `.mp4`** via `ffmpeg`
   (`/usr/bin/ffmpeg`, `-c copy`); falls back to `.h264` if ffmpeg is absent.
+- **`create_video_configuration` must be called with `raw=None`.** picamera2
+  defaults to adding a `raw` stream, and a `main`+`lores`+`raw` config aborts
+  the vc4 pipeline (`stl_vector.h operator[]` assertion, SIGABRT, on
+  Pi 3/4/Zero 2W — verified on `raspberrypi-zero-2w-1`); the live path never
+  uses raw (JPEG comes from `main`, MJPEG from `lores`).
+- Capabilities are read via `Picamera2.sensor_modes`, which **reconfigures the
+  camera internally** and raises if the camera is running — `read_capabilities`
+  runs on the worker executor under the camera lock, caches its result, and
+  skips the dynamic read while the camera is started (static catalog fallback).
 - Live view uses a **persistent MJPEG encoder** + a feed thread that fans frames
   out to per-client subscriber queues (the stream is never torn down on control
   changes). `set_controls` applies at **runtime** (no reconfigure); only
@@ -89,7 +104,12 @@ of truth for planning; `openspec/project.md` holds the full stack/domain context
 - Vendor tuning file `innomakerpi5_imx290.json` is installed as
   `/usr/share/libcamera/ipa/rpi/pisp/imx290.json` (original backed up to
   `imx290.json.rpi-default`) to correct the IMX462 colour cast. The env var
-  `LIBCAMERA_RPI_TUNING_FILE` is NOT honored by this libcamera build.
+  `LIBCAMERA_RPI_TUNING_FILE` is NOT honored by this libcamera build. The
+  vendor tuning is **Pi 5 (pisp) specific**; on previous-gen pipelines (vc4,
+  e.g. Pi 3/4/Zero 2W) the role detects the device model (not the IPA dir —
+  both `pisp` and `vc4` dirs exist on every install) and keeps the stock
+  `imx290.json` (no vendor colour fix there), restoring it if previously
+  installed.
 - Current settings (gain/exposure) are read back via `capture_metadata()` from a
   background poll thread and surfaced in the WebSocket status payload (skipped
   while recording). The read runs **outside** the camera lock (with a timeout) so

@@ -8,7 +8,11 @@ Stream a live view of a camera and push status/control updates to clients.
 
 ### Requirement: MJPEG live view
 The system SHALL expose a continuous MJPEG stream of the selected camera via
-HTTP multipart/x-mixed-replace.
+HTTP multipart/x-mixed-replace. The camera SHALL be configured with a `main`
+stream (full resolution, for stills and recording) and a `lores` stream
+(downscaled, for MJPEG) only — the stream configuration SHALL NOT include a raw
+stream, since picamera2's default raw stream crashes the previous-generation
+(vc4) camera pipeline.
 
 #### Scenario: Client subscribes to live view
 - **WHEN** a client requests the live-view stream for a selected camera
@@ -18,6 +22,12 @@ HTTP multipart/x-mixed-replace.
 #### Scenario: Live view for unavailable camera
 - **WHEN** a client requests live view for a camera that is not connected
 - **THEN** the system returns an error instead of a stream
+
+#### Scenario: Stream starts on a previous-gen board
+- **WHEN** a client requests live view on a previous-generation (vc4) platform
+  board (e.g. Raspberry Pi Zero 2 W)
+- **THEN** the camera starts with `main` and `lores` streams only and the MJPEG
+  stream runs without a pipeline crash
 
 ### Requirement: WebSocket status and control push
 The system SHALL provide a WebSocket endpoint that pushes live status (camera

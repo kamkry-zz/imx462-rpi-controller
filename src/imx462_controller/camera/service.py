@@ -364,6 +364,7 @@ class CameraWorker:
         self._feed_stop = threading.Event()
         self._stream_mode = "continuous"
         self._capturing = False
+        self._capabilities: CameraCapabilities | None = None
         self._metadata: dict[str, Any] = {}
         self._metadata_lock = threading.Lock()
         self._metadata_stop = threading.Event()
@@ -428,6 +429,7 @@ class CameraWorker:
             config = self._picam2.create_video_configuration(
                 main={"size": (mode.width, mode.height), "format": "YUV420"},
                 lores={"size": (lw, lh), "format": "YUV420"},
+                raw=None,
                 sensor=sensor,
                 controls=controls,
                 transform=_transform(self._hflip, self._vflip),
@@ -474,6 +476,21 @@ class CameraWorker:
             else:
                 self._picam2.set_controls(normalized)
             logger.info("Camera %s controls set: %s", self._name, normalized)
+
+    def capabilities(self) -> CameraCapabilities | None:
+        """Read authoritative capabilities once, serialized with camera ops.
+
+        ``Picamera2.sensor_modes`` internally reconfigures the camera and
+        raises if it is already running, so the read takes the worker lock and
+        is skipped while the camera is started; the static per-model catalog
+        covers that case. The result is cached (sensor modes never change).
+        """
+        with self._lock:
+            if self._capabilities is None:
+                if self._started:
+                    return None
+                self._capabilities = read_capabilities(self._picam2)
+            return self._capabilities
 
     def current_settings(self) -> dict[str, Any]:
         """Return the latest gain/exposure read by the background metadata thread.
@@ -788,8 +805,10 @@ class CameraManager:
             raise KeyError(f"Camera {camera_id} is not configured")
         try:
             worker = self.get_worker(camera_id)
-            caps = read_capabilities(worker._picam2)
-            if caps.modes:
+            # Run on the worker executor so sensor-mode reads are serialized
+            # with configure/start/controls instead of racing them.
+            caps = self._executor.submit(worker.capabilities).result()
+            if caps and caps.modes:
                 return caps
         except Exception as exc:  # noqa: BLE001 - camera may be absent/busy
             logger.warning("Capability read failed for %s: %s", cam.name, exc)

@@ -33,11 +33,12 @@ class FakePicamera2:
         ]
 
     def create_video_configuration(
-        self, main=None, lores=None, sensor=None, controls=None, transform=None
+        self, main=None, lores=None, sensor=None, controls=None, transform=None, raw=None
     ):
         return {
             "main": main,
             "lores": lores,
+            "raw": raw,
             "sensor": sensor,
             "controls": controls,
             "transform": transform,
@@ -102,6 +103,15 @@ def test_configure_mode_uses_raw12_for_12bit(capture_config):
     worker.configure_mode(CameraMode(width=1920, height=1080, bit_depth=12, framerate=60))
     assert fake.started is True
     assert fake.config["sensor"]["bit_depth"] == 12
+
+
+def test_configure_mode_requests_no_raw_stream(capture_config):
+    # picamera2's create_video_configuration defaults to a raw stream, which
+    # crashes the vc4 pipeline (Pi 3/4/Zero 2W); the live path never uses raw.
+    fake = FakePicamera2()
+    worker = CameraWorker(0, "cam0", fake, capture_config)
+    worker.configure_mode(CameraMode(width=1920, height=1080, bit_depth=12, framerate=60))
+    assert fake.config["raw"] is None
 
 
 def test_configure_mode_uses_raw10_for_10bit(capture_config):
@@ -494,6 +504,24 @@ def test_manager_capabilities_opens_camera(app_config):
     caps = manager.capabilities(0)
     assert caps.exposure_max_us == 115686258
     assert caps.supports_raw12 is True
+
+
+def test_worker_capabilities_cached_after_first_read(capture_config):
+    fake = FakePicamera2()
+    worker = CameraWorker(0, "cam0", fake, capture_config)
+    caps = worker.capabilities()
+    assert caps is not None
+    assert caps.exposure_max_us == 115686258
+    worker.configure_mode(CameraMode(width=1920, height=1080, bit_depth=12, framerate=60))
+    assert fake.started is True
+    assert worker.capabilities() is caps
+
+
+def test_worker_capabilities_skipped_while_started(capture_config):
+    fake = FakePicamera2()
+    worker = CameraWorker(0, "cam0", fake, capture_config)
+    worker.configure_mode(CameraMode(width=1920, height=1080, bit_depth=12, framerate=60))
+    assert worker.capabilities() is None
 
 
 def test_configure_mode_omits_bit_depth_when_none(capture_config):

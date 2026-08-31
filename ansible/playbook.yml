@@ -6,6 +6,16 @@
   vars:
     imx462_cameras: "{{ imx462_config.cameras }}"
 
+  pre_tasks:
+    - name: Read device model to detect the libcamera platform (pisp = Pi 5)
+      slurp:
+        src: /proc/device-tree/model
+      register: device_model
+
+    - name: Determine if this is a Pi 5 (pisp) platform
+      set_fact:
+        imx462_is_pi5_pisp: "{{ 'Raspberry Pi 5' in (device_model.content | b64decode) }}"
+
   roles:
     - role: camera-overlay
     - role: app
