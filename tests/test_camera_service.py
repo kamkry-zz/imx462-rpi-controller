@@ -510,7 +510,8 @@ def test_worker_capabilities_cached_after_first_read(capture_config):
     fake = FakePicamera2()
     worker = CameraWorker(0, "cam0", fake, capture_config)
     caps = worker.capabilities()
-    assert caps is not None and caps.exposure_max_us == 115686258
+    assert caps is not None
+    assert caps.exposure_max_us == 115686258
     worker.configure_mode(CameraMode(width=1920, height=1080, bit_depth=12, framerate=60))
     assert fake.started is True
     assert worker.capabilities() is caps
