@@ -18,11 +18,12 @@ class FakePicamera2:
         self.captured = []
 
     def create_video_configuration(
-        self, main=None, lores=None, sensor=None, controls=None, transform=None
+        self, main=None, lores=None, sensor=None, controls=None, transform=None, raw=None
     ):
         return {
             "main": main,
             "lores": lores,
+            "raw": raw,
             "sensor": sensor,
             "controls": controls,
             "transform": transform,

@@ -2,12 +2,19 @@
 
 ## Prerequisites
 
-- Target Raspberry Pi (3/4/5) running Raspberry Pi OS **Bookworm (Debian 12) or
-  Trixie (Debian 13)**.
+- Target Raspberry Pi (3/4/5, Pi Zero 2 W) running Raspberry Pi OS **Bookworm
+  (Debian 12) or Trixie (Debian 13)**.
 - SSH access by IP with pre-exchanged keys (passwordless for the `pi`/service user).
 - A reachable MQTT broker and an externally-reachable OTLP endpoint (the k3s
   collector `otel-collector.observability.svc` is cluster-internal; expose it via
   Gateway/NodePort before deploying).
+
+> **Platform-aware overlays:** the playbook detects the camera platform from the
+> device model. On Pi 5 (pisp) each overlay line carries the `camN` suffix; on
+> previous-gen boards (Pi 3/4, Zero 2 W) the suffix is omitted so the overlay's
+> default (Unicam 1, the standard camera connector) applies — `cam0` on those
+> boards would select the Compute Module CSI0 layout instead. The vendor IMX462
+> tuning file is installed only on Pi 5.
 
 ## Deploy
 

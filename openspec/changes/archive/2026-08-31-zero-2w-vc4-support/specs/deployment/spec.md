@@ -1,10 +1,4 @@
-# Deployment Specification
-
-## Purpose
-
-Provision the Raspberry Pi and manage the application service via Ansible.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Ansible provisioning
 The system SHALL provide Ansible automation that, given a target IP and
@@ -27,14 +21,6 @@ The playbook SHALL detect the host's libcamera platform from the device model
 - **THEN** it determines from the device model whether the host runs the Pi 5
   (pisp) or previous-generation (csi) camera platform and applies the matching
   overlay and tuning steps
-
-### Requirement: Systemd service lifecycle
-The system SHALL deploy the application as a systemd service that starts on boot
-and restarts on failure.
-
-#### Scenario: Service enabled and running
-- **WHEN** deployment completes
-- **THEN** the service is enabled, running, and configured to restart on failure
 
 ### Requirement: Camera overlay for one or two cameras
 The deployment SHALL apply one device-tree overlay per configured camera, driven
@@ -81,54 +67,3 @@ file was previously installed.
 - **WHEN** an `imx290` camera is configured on a csi platform board
 - **THEN** the stock tuning file remains in place, or is restored from the
   backup if a previous install had replaced it
-
-### Requirement: Interactive setup configurator
-The system SHALL provide an interactive, stdlib-only command-line tool that
-guides a user through the questions needed to deploy to a fresh Raspberry Pi and
-generates the local Ansible inventory and host_vars.
-
-#### Scenario: Generate deployment files
-- **WHEN** the configurator runs with valid answers
-- **THEN** it writes `ansible/inventory.ini` and
-  `ansible/host_vars/<hostname>.yml`
-
-#### Scenario: Scripted answers
-- **WHEN** the configurator is given a JSON answers file
-- **THEN** it generates the files without interactive prompts
-
-#### Scenario: Secrets never printed
-- **WHEN** the configurator collects secret values
-- **THEN** they are masked during input and never written to stdout
-
-### Requirement: Secrets kept out of the repository
-The system SHALL keep all secrets out of version control: configuration and
-secrets live in git-ignored local files, and only `*.example` templates are
-committed.
-
-#### Scenario: Secrets git-ignored
-- **WHEN** the repository is inspected
-- **THEN** `config.yaml`, `.env`, `ansible/inventory.ini`, and
-  `ansible/host_vars/*` (except `*.example.yml`) are ignored by git
-
-#### Scenario: Example template committed
-- **WHEN** the repository is inspected
-- **THEN** a `*.example.yml` host_vars template is present in the repository
-
-### Requirement: Continuous integration
-The system SHALL run the test suite and linter in CI on every pull request and
-push to the default branch.
-
-#### Scenario: PR runs tests and lint
-- **WHEN** a pull request is opened against the default branch
-- **THEN** the test suite (pytest) runs on supported Python versions and the
-  linter (ruff) runs, and their results are reported on the PR
-
-#### Scenario: Push to default branch runs CI
-- **WHEN** a commit is pushed to the default branch
-- **THEN** the same tests and lint run on the push
-
-#### Scenario: Test results posted to the PR
-- **WHEN** a pull request run finishes
-- **THEN** a comment with the aggregated test results (passed/failed/skipped and
-  failed test names) is posted to the pull request
-

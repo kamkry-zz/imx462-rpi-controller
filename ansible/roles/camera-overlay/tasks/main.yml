@@ -17,7 +17,7 @@
   set_fact:
     configured_camera_ids: "{{ imx462_cameras | map(attribute='id') | list }}"
 
-- name: Ensure overlay for each configured camera
+- name: Ensure overlay for each configured camera (Pi 5 pisp, camN suffix)
   lineinfile:
     path: "{{ firmware_config }}"
     regexp: '^dtoverlay=.*,cam{{ camera.id }}\s*$'
@@ -25,6 +25,20 @@
   loop: "{{ imx462_cameras }}"
   loop_control:
     loop_var: camera
+  when: imx462_is_pi5_pisp
+
+- name: Ensure overlay for each configured camera (csi platform, no camN suffix)
+  # On the csi platform (Pi 3/4, Zero 2W) the imx290/imx327 overlays default to
+  # Unicam 1 (the standard camera connector); 'cam0' there selects the Compute
+  # Module CSI0 layout instead, so the suffix must be omitted.
+  lineinfile:
+    path: "{{ firmware_config }}"
+    regexp: '^dtoverlay={{ camera.overlay }}(,[^\s]*)*\s*$'
+    line: "dtoverlay={{ camera.overlay }}{% if camera.overlay_params | default('') %},{{ camera.overlay_params }}{% endif %}"
+  loop: "{{ imx462_cameras }}"
+  loop_control:
+    loop_var: camera
+  when: not imx462_is_pi5_pisp
 
 - name: Remove stale overlays for unconfigured camera slots
   lineinfile:

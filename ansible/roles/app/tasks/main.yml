@@ -21,7 +21,12 @@
     imx462_has_imx290: "{{ (imx462_cameras | selectattr('overlay', 'equalto', 'imx290') | list | length) > 0 }}"
 
 - name: Install vendor camera tuning file (replaces imx290.json for correct IMX462 colour)
-  when: imx462_has_imx290
+  # The vendor tuning is Pi 5 / pisp-specific; on previous-gen pipelines (vc4,
+  # e.g. Pi 3/4/Zero 2W) the stock imx290.json is kept as-is.
+  # imx462_is_pi5_pisp is set by the play's pre_tasks.
+  when:
+    - imx462_has_imx290
+    - imx462_is_pi5_pisp
   block:
     - name: Back up stock imx290 tuning file
       copy:
@@ -36,6 +41,19 @@
         dest: /usr/share/libcamera/ipa/rpi/pisp/imx290.json
         mode: "0644"
   notify: Restart imx462-controller
+
+- name: Restore stock imx290 tuning on non-Pi 5 platforms (vendor file unused there)
+  when:
+    - imx462_has_imx290
+    - not imx462_is_pi5_pisp
+  block:
+    - name: Restore stock pisp imx290.json from backup
+      copy:
+        src: /usr/share/libcamera/ipa/rpi/pisp/imx290.json.rpi-default
+        dest: /usr/share/libcamera/ipa/rpi/pisp/imx290.json
+        remote_src: true
+        mode: "0644"
+      failed_when: false
 
 - name: Create app and media directories
   file:
