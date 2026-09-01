@@ -34,7 +34,7 @@ _ASSET_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
 class ModeRequest(BaseModel):
     width: int
     height: int
-    bit_depth: int
+    bit_depth: int | None = None  # absent for sensors without a bit-depth selector
     framerate: int
 
 

@@ -37,6 +37,11 @@ tracer = get_tracer("imx462_controller.camera")
 MIN_FRAME_US = 16_666  # 1/60 s
 IMX290_MAX_EXPOSURE_US = 115_686_258  # sensor max (~115.7 s), used as a fallback bound
 
+# Fixed bitrate for the always-on MJPEG live view. Pinned (instead of picamera2's
+# framerate-scaled default) so low-framerate sensor modes (e.g. imx708 4K at
+# ~14 fps) do not collapse the bitrate and cause macroblocking in the live feed.
+MJPEG_BITRATE = 20_000_000
+
 
 def _sanitize_controls(controls: dict[str, Any]) -> dict[str, Any]:
     """Drop None/NaN values so a bad payload can never stall the sensor."""
@@ -950,8 +955,14 @@ def _default_encoder_factory(path: Path) -> tuple[Any, Any]:
 
 
 def _default_mjpeg_encoder_factory(output: Any) -> tuple[Any, Any]:
-    """Build an MJPEG encoder and file output bound to the streaming buffer."""
+    """Build an MJPEG encoder and file output bound to the streaming buffer.
+
+    The bitrate is pinned rather than left to picamera2's default, which scales
+    with the encoder's nominal framerate: in low-framerate sensor modes (e.g.
+    the 4K mode of the imx708 at ~14 fps) the default would halve the bitrate
+    and produce visible macroblocking in the live view.
+    """
     from picamera2.encoders import MJPEGEncoder
     from picamera2.outputs import FileOutput
 
-    return MJPEGEncoder(), FileOutput(output)
+    return MJPEGEncoder(bitrate=MJPEG_BITRATE), FileOutput(output)

@@ -317,6 +317,9 @@ def _host_vars_dict(answers: dict[str, Any]) -> dict[str, Any]:
             "MQTT_PASSWORD": answers["mqtt_password"],
             "OTEL_EXPORTER_OTLP_HEADERS": answers["otel_headers"],
             "OTEL_EXPORTER_OTLP_CERTIFICATE": answers["otel_certificate"],
+            "OTEL_RESOURCE_ATTRIBUTES": (
+                f"host.name={answers['target_host']},service.instance.id={answers['target_host']}"
+            ),
         },
     }
 
