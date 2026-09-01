@@ -335,7 +335,7 @@ async function applyMode() {
       body: JSON.stringify(mode),
     });
   } catch (err) {
-    console.error("Mode error:", err);
+    toast(`Mode error: ${err.message}`, true);
   }
 }
 
@@ -562,7 +562,7 @@ async function applyControls() {
       body: JSON.stringify({ controls }),
     });
   } catch (err) {
-    console.error("Controls error:", err);
+    toast(`Controls error: ${err.message}`, true);
   }
   syncSingleMode();
 }
@@ -575,7 +575,7 @@ async function applyFlip() {
       body: JSON.stringify({ hflip: el.hflipToggle.checked, vflip: el.vflipToggle.checked }),
     });
   } catch (err) {
-    console.error("Flip error:", err);
+    toast(`Flip error: ${err.message}`, true);
   }
 }
 
@@ -601,7 +601,7 @@ async function setSingleMode(on) {
       body: JSON.stringify({ mode: on ? "single" : "continuous" }),
     });
   } catch (err) {
-    console.error("Stream mode error:", err);
+    toast(`Stream mode error: ${err.message}`, true);
   }
 }
 

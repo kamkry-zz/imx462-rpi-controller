@@ -98,6 +98,17 @@ def test_set_mode(client):
     assert res.json()["ok"] is True
 
 
+def test_set_mode_accepts_null_bit_depth(client):
+    # Sensors without a bit-depth selector (e.g. imx708) report bit_depth: null;
+    # the mode API must accept it instead of rejecting with 422.
+    res = client.put(
+        "/api/cameras/0/mode",
+        json={"width": 2304, "height": 1296, "bit_depth": None, "framerate": 30},
+    )
+    assert res.status_code == 200
+    assert res.json()["ok"] is True
+
+
 def test_capture_photo(client):
     client.put(
         "/api/cameras/0/mode",

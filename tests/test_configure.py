@@ -62,6 +62,10 @@ def test_render_host_vars_yaml_valid_two_cameras():
     assert doc["imx462_env"]["MQTT_HOST"] == "broker.example.com"
     assert doc["imx462_env"]["MQTT_PORT"] == "1883"
     assert doc["imx462_env"]["MQTT_PASSWORD"] == "s3cret"
+    assert (
+        doc["imx462_env"]["OTEL_RESOURCE_ATTRIBUTES"]
+        == "host.name=cam-server,service.instance.id=cam-server"
+    )
     assert doc["imx462_venv"] == "{{ imx462_app_dir }}/venv"
 
 

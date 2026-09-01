@@ -61,3 +61,7 @@ imx462_env:
   # CA cert path on the target for https endpoints; the file itself ships via
   # the app role from files/k3s-ca.crt (git-ignored). Blank = system CAs.
   OTEL_EXPORTER_OTLP_CERTIFICATE: ""
+  # Stable per-host OTel resource identity (host.name + service.instance.id):
+  # gives per-Pi `instance` labels in Prometheus and `host_name` labels in Loki.
+  # Use this Pi's hostname/FQDN.
+  OTEL_RESOURCE_ATTRIBUTES: "host.name=my-pi,service.instance.id=my-pi"

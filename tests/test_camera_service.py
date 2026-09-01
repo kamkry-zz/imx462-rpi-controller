@@ -3,9 +3,11 @@ from __future__ import annotations
 import pytest
 
 from imx462_controller.camera.service import (
+    MJPEG_BITRATE,
     CameraManager,
     CameraMode,
     CameraWorker,
+    _default_mjpeg_encoder_factory,
     _StreamingOutput,
     read_capabilities,
 )
@@ -530,3 +532,28 @@ def test_configure_mode_omits_bit_depth_when_none(capture_config):
     worker.configure_mode(CameraMode(width=2304, height=1296, bit_depth=None, framerate=30))
     assert "bit_depth" not in fake.config["sensor"]
     assert fake.config["sensor"]["output_size"] == (2304, 1296)
+
+
+def test_default_mjpeg_encoder_factory_pins_bitrate(monkeypatch):
+    # picamera2's default MJPEG bitrate scales with the encoder's nominal
+    # framerate and collapses in low-framerate modes (e.g. imx708 4K at ~14 fps);
+    # the factory must pin the constant instead.
+    import sys
+    import types
+
+    class FakeEncoder:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    encoders = types.ModuleType("picamera2.encoders")
+    encoders.MJPEGEncoder = FakeEncoder
+    outputs = types.ModuleType("picamera2.outputs")
+    outputs.FileOutput = lambda output: output
+    picamera2 = types.ModuleType("picamera2")
+    monkeypatch.setitem(sys.modules, "picamera2", picamera2)
+    monkeypatch.setitem(sys.modules, "picamera2.encoders", encoders)
+    monkeypatch.setitem(sys.modules, "picamera2.outputs", outputs)
+
+    encoder, output = _default_mjpeg_encoder_factory("stream-output")
+    assert encoder.kwargs == {"bitrate": MJPEG_BITRATE}
+    assert output == "stream-output"
