@@ -41,9 +41,27 @@ REST API, with MQTT telemetry and OpenTelemetry observability. Deployed with Ans
 - Supported modes (IMX462-specific): RAW10/RAW12 at 1280x720@60 and 1920x1080@60.
 - Heterogeneous sensors are supported: each configured camera declares its own
   overlay (`imx290`, `imx708` for the Camera Module 3 / 3 Wide, `imx219`, `imx477`,
-  `ov5647`, `imx296`). Modes and exposure/gain bounds are read from libcamera at
-  runtime (`Picamera2.sensor_modes` / `camera_controls`); the read serializes
-  with camera ops, caches, and is skipped while the camera runs.
+  `ov5647`, `imx296`, `imx415`). Modes and exposure/gain bounds are read from
+  libcamera at runtime (`Picamera2.sensor_modes` / `camera_controls`); the read
+  serializes with camera ops, caches, and is skipped while the camera runs.
+- **IMX415 (4K, Inno Maker CAM-MIPI-IMX415)** rides on **mainline support**: the
+  `imx415` overlay + `sony,imx415` driver ship in the Raspberry Pi kernel
+  (rpi-6.6.y Bookworm onwards) and stock libcamera ships `imx415.json` tuning for
+  vc4 and pisp — no vendor driver/tuning install. Sensor facts: full-array
+  **3864x2192 RAW10-only** readout at every output size, gain 0–100 × 0.3 dB
+  (≈ ISO 100–3160), 20-bit VMAX (long exposures). **2-lane csi boards (Pi 3/4,
+  Zero 2 W) are bandwidth-bound to ~15–17 fps** at any resolution; a 4-lane port
+  (Pi 5 CAM1) with the `4lane` overlay param reaches ~30 fps. The UI catalog
+  therefore offers 4K at both 15 and 30 fps (30 clamps to the 2-lane ceiling
+  elsewhere). Overlay camN-suffix semantics match imx290 (bare line on csi
+  platforms). The vendor requires
+  `camera_auto_detect=0`; the deployment role sets it only when an imx415 is
+  configured and preflights kernel/libcamera support (fails fast on outdated
+  OSes).
+- **Manual-exposure/snapshot frame durations floor at the mode's minimum frame
+  time** (`1/framerate`), never a fixed 1/60 s: low-framerate modes (imx415
+  ~15 fps, imx708 4K ~14 fps) would otherwise receive an out-of-range
+  `FrameDurationLimits`.
 - **`create_video_configuration` is called with `raw=None`**: picamera2's default
   raw stream crashes the vc4 pipeline (`main`+`lores`+`raw` → SIGABRT).
 - Verify with `rpicam-hello --list-cameras` after reboot.

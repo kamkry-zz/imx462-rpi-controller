@@ -69,6 +69,34 @@ def test_load_config_camera_overlay_and_default_mode(tmp_path):
     assert cam1.default_mode.width == 2304
 
 
+def test_load_config_imx415_camera_with_params(tmp_path):
+    import yaml
+
+    doc = {
+        "cameras": [
+            {
+                "id": 0,
+                "name": "cam0",
+                "overlay": "imx415",
+                "overlay_params": "4lane",
+                "default_mode": {"width": 3840, "height": 2160, "framerate": 30},
+            }
+        ]
+    }
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(doc))
+    config = load_config(path)
+    cam = config.cameras[0]
+    assert cam.overlay == "imx415"
+    assert cam.overlay_params == "4lane"
+    assert cam.default_mode.bit_depth is None
+    assert (cam.default_mode.width, cam.default_mode.height, cam.default_mode.framerate) == (
+        3840,
+        2160,
+        30,
+    )
+
+
 def test_load_config_missing_file(tmp_path):
     from imx462_controller.config import ConfigError
 

@@ -17,10 +17,32 @@ of truth for planning; `openspec/project.md` holds the full stack/domain context
 - Sensor modes: RAW10/RAW12 at `1280x720@60` and `1920x1080@60`.
 - **Heterogeneous cameras** are supported: each configured camera declares its own
   device-tree overlay in `config.yaml` (`imx290` for the IMX462, `imx708` for the
-  Camera Module 3 / 3 Wide, plus `imx219`/`imx477`/`ov5647`/`imx296`). The Ansible
-  `camera-overlay` role writes one `dtoverlay=...,camN` line per camera and removes
+  Camera Module 3 / 3 Wide, plus `imx219`/`imx477`/`ov5647`/`imx296`/`imx415`). The
+  Ansible `camera-overlay` role writes one `dtoverlay=...,camN` line per camera and removes
   stale lines for unconfigured slots, so switching cam1 from `imx290` to `imx708` is
   handled by a re-run + reboot.
+- **IMX415 rides on mainline support** — the `imx415` overlay + `sony,imx415`
+  driver ship in the Raspberry Pi kernel (rpi-6.6.y Bookworm onwards) and stock
+  libcamera ships `imx415.json` tuning for both vc4 and pisp; no vendor
+  driver/tuning install (unlike the IMX462). Sensor facts: full-array
+  **3864x2192 RAW10-only** readout at every output size, gain 0–100 × 0.3 dB
+  (≈ ISO 100–3160), 20-bit VMAX (long exposures). **2-lane csi boards (Pi 3/4,
+  Zero 2 W) are bandwidth-bound to ~15–17 fps**; only a 4-lane port (Pi 5 CAM1)
+  with `overlay_params: 4lane` reaches ~30 fps. The configurator exposes
+  `imx415` (4K@15) and `imx415-4lane` (4K@30) choices. The vendor requires
+  `camera_auto_detect=0` — the role sets it only when an imx415 is configured —
+  and the role preflights kernel/libcamera support (fails fast with an upgrade
+  hint on outdated OSes).
+- **Sensor switches remove the old overlay line** — the camera-overlay role
+  deletes stale `camN`-suffixed lines (Pi 5) and, on csi platforms, any stale
+  *bare* line of a known camera overlay no longer configured (verified on
+  `raspberrypi-zero-2w-1`, imx290 → imx415): without this the two overlays
+  would fight over Unicam 1. The known-overlay list lives in the role and must
+  stay in sync with `OVERLAYS` in `scripts/configure.py`.
+- **Min frame duration is per-mode** (`1/framerate`), not a fixed 1/60 s: on
+  low-framerate sensors (imx415 ~15 fps) the manual-exposure/snapshot paths
+  would otherwise request an out-of-range `FrameDurationLimits`. Do not reintroduce
+  a hard-coded 60 fps floor for snapshot/control frame durations.
 - Supported modes and exposure/gain bounds are **read from libcamera at runtime**
   (`Picamera2.sensor_modes` / `camera_controls`) and surfaced via
   `GET /api/cameras/{id}/capabilities`; a static per-model catalog is only a fallback

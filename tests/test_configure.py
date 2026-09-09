@@ -84,6 +84,26 @@ def test_scalar_quoting():
     assert configure._scalar(8000) == "8000"
 
 
+def test_render_host_vars_imx415_2lane():
+    a = configure.default_answers()
+    a.update(camera0_overlay="imx415")
+    doc = yaml.safe_load(configure.render_host_vars(a))
+    cam = doc["imx462_config"]["cameras"][0]
+    assert cam["overlay"] == "imx415"
+    assert "overlay_params" not in cam
+    assert cam["default_mode"] == {"width": 3840, "height": 2160, "framerate": 15}
+
+
+def test_render_host_vars_imx415_4lane():
+    a = configure.default_answers()
+    a.update(camera0_overlay="imx415-4lane")
+    doc = yaml.safe_load(configure.render_host_vars(a))
+    cam = doc["imx462_config"]["cameras"][0]
+    assert cam["overlay"] == "imx415"
+    assert cam["overlay_params"] == "4lane"
+    assert cam["default_mode"] == {"width": 3840, "height": 2160, "framerate": 30}
+
+
 def test_cli_with_answers_file(tmp_path):
     answers = configure.default_answers()
     answers.update(

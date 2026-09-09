@@ -14,7 +14,22 @@ const state = {
 
 const MAX_NATIVE_EXPOSURE_US = 115000000;
 const SINGLE_MODE_THRESHOLD_US = 2000000; // >2s forces single-frame mode
-const MIN_FRAME_US = 16666; // 1/60s
+const MIN_FRAME_US = 16666; // 1/60s (fallback floor for unknown modes)
+
+// Minimum frame duration for the mode currently selected in the dropdown
+// (1/framerate). Low-framerate sensors (e.g. imx415 at ~15 fps on 2-lane
+// boards) need ~67 ms — a fixed 1/60 s floor would exceed their capabilities.
+function minFrameUs() {
+  try {
+    if (el.modeSelect && el.modeSelect.value) {
+      const fps = JSON.parse(el.modeSelect.value).framerate;
+      if (Number.isFinite(fps) && fps > 0) return Math.ceil(1000000 / fps);
+    }
+  } catch (e) {
+    // non-JSON mode value: fall through to the 1/60s floor
+  }
+  return MIN_FRAME_US;
+}
 
 const el = {
   cameraSelect: document.getElementById("camera-select"),
@@ -264,7 +279,10 @@ function populateModes(camera) {
   for (const m of camera.modes) {
     const opt = document.createElement("option");
     opt.value = JSON.stringify(m);
-    opt.textContent = `${m.width}x${m.height} RAW${m.bit_depth} @${m.framerate}fps`;
+    opt.textContent =
+      m.bit_depth == null
+        ? `${m.width}x${m.height} @${m.framerate}fps`
+        : `${m.width}x${m.height} RAW${m.bit_depth} @${m.framerate}fps`;
     el.modeSelect.appendChild(opt);
   }
 }
@@ -544,13 +562,13 @@ async function applyControls() {
     const shutterUs = Number.parseInt(el.shutter.value, 10);
     if (!Number.isNaN(shutterUs) && shutterUs > 0) {
       const nativeUs = Math.min(shutterUs, capsBounds().maxUs);
-      const frameUs = Math.max(nativeUs, MIN_FRAME_US);
+      const frameUs = Math.max(nativeUs, minFrameUs());
       controls.ExposureTime = nativeUs;
       controls.FrameDurationLimits = [frameUs, frameUs];
     }
     controls.AnalogueGain = gainForIso(Number.parseInt(el.iso.value, 10)) ?? 1.0;
   } else {
-    controls.FrameDurationLimits = [MIN_FRAME_US, MIN_FRAME_US];
+    controls.FrameDurationLimits = [minFrameUs(), minFrameUs()];
   }
   if (!awb) {
     const wb = Number.parseInt(el.wbTemp.value, 10);
@@ -621,7 +639,7 @@ function updateSingleUI() {
 async function captureFrame() {
   if (state.selectedId == null || state.capturing) return;
   const shutterUs = Number.parseInt(el.shutter.value, 10);
-  const exposureUs = Number.isNaN(shutterUs) || shutterUs <= 0 ? MIN_FRAME_US : shutterUs;
+  const exposureUs = Number.isNaN(shutterUs) || shutterUs <= 0 ? minFrameUs() : shutterUs;
   const gain = gainForIso(Number.parseInt(el.iso.value, 10)) ?? 1.0;
   state.capturing = true;
   el.captureBtn.disabled = true;
