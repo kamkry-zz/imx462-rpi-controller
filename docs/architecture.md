@@ -36,7 +36,7 @@ flowchart TB
             FFMPEG["ffmpeg\n(h264 → mp4 remux)"]
         end
         MEDIA["Media dir\n(/var/lib/imx462-controller/media)"]
-        SENSOR["Sensors\nper-camera dtoverlay (imx290 / imx708 / ...)"]
+        SENSOR["Sensors\nper-camera dtoverlay (imx290 / imx708 / imx415 / ...)"]
     end
 
     BROKER["MQTT broker\n(external, host+creds in .env)"]
@@ -94,6 +94,10 @@ flowchart TB
   long exposure can run without a continuous feed; `snapshot` reconfigures the
   camera with the requested exposure and captures one still (runtime
   `set_controls` would lag ~10 in-flight frames, i.e. minutes at long exposures).
+  Frame durations requested for manual exposure/snapshots are floored to the
+  selected mode's minimum frame time (1/framerate), so low-framerate sensors
+  (e.g. IMX415 at ~15 fps on 2-lane boards) never get an out-of-range
+  `FrameDurationLimits`.
 - **Controls** (`set_controls`) are applied at runtime; only mode changes
   (`configure_mode`) and flip (`set_flip`) reconfigure (aborting the in-flight frame).
 - A background **settings poll** thread reads `capture_metadata()` outside the

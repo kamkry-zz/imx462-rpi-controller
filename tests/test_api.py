@@ -238,6 +238,7 @@ def test_capabilities_endpoint(client):
     caps = res.json()
     assert caps["exposure_max_us"] > 0
     assert caps["gain_min"] > 0
+    assert caps["min_frame_duration_us"] > 0
 
 
 def test_capabilities_unknown_camera_returns_404(client):

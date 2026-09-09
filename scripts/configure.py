@@ -79,7 +79,12 @@ _INT_KEYS = {
 
 # Supported sensor overlays. ``default_mode`` is used unless the overlay has its
 # own static mode (``None`` means "use the global mode_* answers"). The IMX462 is
-# driven via the imx290 overlay.
+# driven via the imx290 overlay. An entry may carry an ``overlay`` key mapping to
+# the real device-tree overlay name when the choice itself is a profile: the
+# IMX415 is `imx415`, and `imx415-4lane` selects the same overlay with the
+# `4lane` parameter (4-lane CSI, only on a Pi 5 CAM1-style 4-lane port) and a
+# 4K@30 default. The imx415 reads out its full 3864x2192 array RAW10-only, so
+# 2-lane csi boards (Pi 3/4, Zero 2 W) top out around 15 fps at any resolution.
 OVERLAYS: dict[str, dict[str, Any]] = {
     "imx290": {"params": "clock-frequency=74250000", "default_mode": None},
     "imx708": {"params": "", "default_mode": {"width": 2304, "height": 1296, "framerate": 30}},
@@ -87,6 +92,24 @@ OVERLAYS: dict[str, dict[str, Any]] = {
     "imx477": {"params": "", "default_mode": {"width": 2028, "height": 1080, "framerate": 50}},
     "ov5647": {"params": "", "default_mode": {"width": 1920, "height": 1080, "framerate": 30}},
     "imx296": {"params": "", "default_mode": {"width": 1456, "height": 1088, "framerate": 60}},
+    "imx415": {"params": "", "default_mode": {"width": 3840, "height": 2160, "framerate": 15}},
+    "imx415-4lane": {
+        "overlay": "imx415",
+        "params": "4lane",
+        "default_mode": {"width": 3840, "height": 2160, "framerate": 30},
+    },
+}
+
+# Choice keys for the overlay prompts, mapping to friendly descriptions.
+OVERLAY_LABELS: dict[str, str] = {
+    "imx290": "IMX462 (via imx290)",
+    "imx708": "Camera Module 3 / 3 Wide",
+    "imx219": "IMX219 (Pi Camera v2)",
+    "imx477": "IMX477 (Pi HQ)",
+    "ov5647": "OV5647 (Pi Camera v1)",
+    "imx296": "IMX296 (GS)",
+    "imx415": "IMX415 4K (2-lane, ~15 fps)",
+    "imx415-4lane": "IMX415 4K 4-lane (Pi 5 CAM1, 4K@30)",
 }
 
 
@@ -201,14 +224,15 @@ def collect_answers(answers_file: str | None) -> dict[str, Any]:
     a["service_user"] = _ask("systemd service user", a["service_user"])
     a["camera_count"] = _ask("Number of cameras (1 or 2)", a["camera_count"], validate=_int_in_range(1, 2))
     overlay_choices = {k: k for k in OVERLAYS}
+    overlay_hint = ", ".join(f"{k}={label}" for k, label in OVERLAY_LABELS.items())
     a["camera0_overlay"] = _ask(
-        "cam0 sensor overlay (imx290=IMX462, imx708=Camera Module 3, ...)",
+        f"cam0 sensor overlay ({overlay_hint})",
         a["camera0_overlay"],
         validate=_one_of(overlay_choices),
     )
     if int(a["camera_count"]) >= 2:
         a["camera1_overlay"] = _ask(
-            "cam1 sensor overlay (imx290=IMX462, imx708=Camera Module 3, ...)",
+            f"cam1 sensor overlay ({overlay_hint})",
             a["camera1_overlay"],
             validate=_one_of(overlay_choices),
         )
@@ -257,7 +281,8 @@ def collect_answers(answers_file: str | None) -> dict[str, Any]:
 def _camera_entry(camera_id: int, overlay: str, name: str, answers: dict[str, Any]) -> dict[str, Any]:
     """Build a single camera entry for ``imx462_config.cameras``."""
     spec = OVERLAYS[overlay]
-    entry: dict[str, Any] = {"id": camera_id, "name": name, "overlay": overlay}
+    dt_overlay = spec.get("overlay", overlay)
+    entry: dict[str, Any] = {"id": camera_id, "name": name, "overlay": dt_overlay}
     if spec["params"]:
         entry["overlay_params"] = spec["params"]
     default_mode = spec["default_mode"]

@@ -7,7 +7,9 @@ from imx462_controller.camera.service import (
     CameraManager,
     CameraMode,
     CameraWorker,
+    _capabilities_for_model,
     _default_mjpeg_encoder_factory,
+    _min_frame_us,
     _StreamingOutput,
     read_capabilities,
 )
@@ -479,6 +481,71 @@ def test_snapshot_native_long_exposure(capture_config, tmp_path):
     assert fake.controls["ExposureTime"] == 30000000
 
 
+def test_snapshot_frame_duration_floors_at_mode_min_frame(capture_config, tmp_path):
+    # A 15 fps mode has a ~67 ms minimum frame time; a fast shutter must not
+    # request the fixed 1/60 s (16.7 ms) floor used by 60 fps sensors.
+    fake = FakePicamera2()
+    slow = CameraMode(width=320, height=240, framerate=15)
+    worker = CameraWorker(0, "cam0", fake, capture_config, default_mode=slow)
+    worker.configure_mode(slow)
+    path = worker.capture_snapshot(exposure_us=4000, gain=1.0)
+    assert path.suffix == ".jpg"
+    assert path.exists()
+    assert fake.controls["ExposureTime"] == 4000
+    assert fake.controls["FrameDurationLimits"] == (66667, 66667)
+
+
+def test_min_frame_us_follows_mode_framerate():
+    assert _min_frame_us(None) == 16666
+    assert _min_frame_us(CameraMode(width=1920, height=1080, framerate=60)) == 16667
+    assert _min_frame_us(CameraMode(width=3840, height=2160, framerate=15)) == 66667
+
+
+def test_imx415_static_catalog_fallback():
+    caps = _capabilities_for_model("imx415")
+    assert [m.width for m in caps.modes] == [3840, 3840]
+    assert sorted(m.framerate for m in caps.modes) == [15, 30]
+    assert all(m.bit_depth is None for m in caps.modes)
+    assert caps.supports_raw12 is False
+    assert caps.exposure_max_us == 30000000
+    assert caps.gain_max == 31.6
+    assert caps.supports_manual_exposure is True
+    # Fastest advertised mode when no default mode is configured.
+    assert caps.min_frame_duration_us == 33334
+
+
+def test_imx415_static_catalog_min_frame_uses_default_mode():
+    default = CameraMode(width=3840, height=2160, framerate=15)
+    caps = _capabilities_for_model("imx415", default)
+    assert caps.min_frame_duration_us == 66667  # floor of the 15 fps default
+
+
+def test_read_capabilities_min_frame_from_single_slow_mode():
+    fake = FakePicamera2()
+    fake.sensor_modes = [
+        {"size": (3864, 2192), "format": "SRGGB10_CSI2P", "fps": (0.1, 30.0)},
+    ]
+    caps = read_capabilities(fake)
+    assert caps.min_frame_duration_us == 33334  # ceil(1e6 / 30)
+
+
+def test_set_controls_floors_frame_duration_at_mode_min_frame(capture_config):
+    # A client hard-coding a 1/60 s (16 667 µs) floor must not stall or fail a
+    # 15 fps sensor: the controller raises the frame duration to the mode floor.
+    fake = FakePicamera2()
+    slow = CameraMode(width=3840, height=2160, framerate=15)
+    worker = CameraWorker(0, "cam0", fake, capture_config, default_mode=slow)
+    worker.configure_mode(slow)
+    fake.config = None
+    worker.set_controls(
+        {"AeEnable": False, "ExposureTime": 4000, "FrameDurationLimits": [4000, 4000]}
+    )
+    assert fake.config is not None  # reconfigured (frame duration changed)
+    controls = fake.config["controls"]
+    assert controls["ExposureTime"] == 4000
+    assert controls["FrameDurationLimits"] == (66667, 66667)
+
+
 def test_read_capabilities_reads_modes_and_bounds():
     fake = FakePicamera2()
     caps = read_capabilities(fake)
@@ -487,6 +554,7 @@ def test_read_capabilities_reads_modes_and_bounds():
     assert caps.gain_min == 1.0
     assert caps.gain_max == 31.6
     assert caps.supports_raw12 is True
+    assert caps.min_frame_duration_us == 16667
     assert {m.width for m in caps.modes} == {1280, 1920}
 
 

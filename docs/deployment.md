@@ -16,6 +16,26 @@
 > boards would select the Compute Module CSI0 layout instead. The vendor IMX462
 > tuning file is installed only on Pi 5.
 
+### IMX415 (4K) notes
+
+- The Inno Maker **CAM-MIPI-IMX415** is driven by the mainline **`imx415`**
+  overlay and stock libcamera tuning — no vendor driver or tuning files.
+  Requires a current OS: the kernel must ship `imx415.dtbo` (rpi-6.6.y /
+  Bookworm or newer) and libcamera must ship `imx415.json` for the host's
+  pipeline. The playbook **fails fast** with an upgrade hint when these are
+  missing.
+- The sensor reads out its full 3864x2192 array (RAW10) at every output size,
+  so 2-lane boards (Pi 3/4, Zero 2 W) are bandwidth-bound to **~15 fps**. The
+  UI offers 4K profiles at 15 and 30 fps; the 30 fps profile only reaches its
+  rate on a 4-lane port (Pi 5 CAM1) with `overlay_params: "4lane"` — elsewhere
+  libcamera silently clamps it to the 2-lane ~15 fps ceiling.
+- When an imx415 camera is configured the playbook sets `camera_auto_detect=0`
+  in `config.txt` (vendor requirement). Deployments without an imx415 are not
+  touched.
+- Switching the sensor on a board (e.g. imx290 → imx415) is handled by editing
+  host_vars and re-running the playbook + reboot: the role replaces the overlay
+  line and removes the stale bare overlay of the previous sensor.
+
 ## Deploy
 
 1. Generate the local Ansible inventory and host_vars (recommended):
@@ -55,7 +75,8 @@
    This installs `python3-picamera2`, creates the app venv
    (`--system-site-packages` so picamera2 is importable), renders `config.yaml`
    and `.env`, installs the systemd unit, and applies the per-camera dtoverlay
-   (e.g. `imx290` for the IMX462, `imx708` for a Camera Module 3).
+   (e.g. `imx290` for the IMX462, `imx708` for a Camera Module 3, `imx415` for
+   a 4K IMX415 module).
 
 3. Reboot to activate the dtoverlay:
    ```sh

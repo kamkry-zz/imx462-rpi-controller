@@ -31,6 +31,18 @@ imx462_config:
         width: 2304
         height: 1296
         framerate: 30
+    # Inno Maker CAM-MIPI-IMX415 (4K, RAW10-only): mainline imx415 overlay and
+    # stock libcamera tuning, no vendor files. The deployment sets
+    # camera_auto_detect=0 and preflights OS support when this overlay is used.
+    # 2-lane boards (Pi 3/4, Zero 2 W) cap at ~15 fps at any output size; use
+    # `overlay_params: "4lane"` + 3840x2160@30 only on a 4-lane port (Pi 5 CAM1).
+    # - id: 0
+    #   name: "cam0"
+    #   overlay: "imx415"
+    #   default_mode:
+    #     width: 3840
+    #     height: 2160
+    #     framerate: 15
   default_mode:
     width: 1920
     height: 1080

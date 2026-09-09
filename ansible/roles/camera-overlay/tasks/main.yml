@@ -2,7 +2,7 @@
 # Applies the per-camera dtoverlay for each configured sensor.
 # The IMX462 is driven via the imx290 overlay (not imx462); other Raspberry Pi
 # Camera Modules use their own overlay (imx708, imx219, imx477, ov5647, imx296,
-# ...). Each configured camera is a mapping {id, overlay, overlay_params}.
+# imx415, ...). Each configured camera is a mapping {id, overlay, overlay_params}.
 
 - name: Check for firmware config.txt
   stat:
@@ -13,9 +13,68 @@
   set_fact:
     firmware_config: "{{ '/boot/firmware/config.txt' if firmware_stat.stat.exists else '/boot/config.txt' }}"
 
+- name: Determine the boot overlays directory
+  set_fact:
+    boot_overlays_dir: "{{ '/boot/firmware/overlays' if firmware_stat.stat.exists else '/boot/overlays' }}"
+
 - name: Compute configured camera ids
   set_fact:
     configured_camera_ids: "{{ imx462_cameras | map(attribute='id') | list }}"
+
+- name: Define known camera overlays for stale-line cleanup
+  # Keep in sync with OVERLAYS in scripts/configure.py.
+  set_fact:
+    known_camera_overlays:
+      - imx290
+      - imx708
+      - imx219
+      - imx477
+      - ov5647
+      - imx296
+      - imx415
+    configured_camera_overlays: "{{ imx462_cameras | map(attribute='overlay') | list }}"
+
+- name: Determine if an imx415 camera is configured
+  set_fact:
+    imx462_has_imx415: "{{ (imx462_cameras | selectattr('overlay', 'equalto', 'imx415') | list | length) > 0 }}"
+
+- name: Preflight imx415 OS support (kernel overlay dtbo)
+  # The imx415 needs a recent Raspberry Pi OS: the kernel ships the imx415
+  # overlay/driver (rpi-6.6.y Bookworm onwards) and libcamera ships imx415
+  # tuning for both pipelines. Fail fast instead of an empty-bus error later.
+  stat:
+    path: "{{ boot_overlays_dir }}/imx415.dtbo"
+  register: imx415_dtbo_stat
+  when: imx462_has_imx415
+
+- name: Preflight imx415 OS support (libcamera tuning file)
+  stat:
+    path: "/usr/share/libcamera/ipa/rpi/{{ 'pisp' if imx462_is_pi5_pisp else 'vc4' }}/imx415.json"
+  register: imx415_tuning_stat
+  when: imx462_has_imx415
+
+- name: Fail with an actionable message when IMX415 support is missing
+  fail:
+    msg: >-
+      This OS cannot drive the IMX415 camera:
+      {% if not (imx415_dtbo_stat is defined and imx415_dtbo_stat.stat.exists) %}
+      kernel overlay 'imx415' missing (checked {{ boot_overlays_dir }}/imx415.dtbo);
+      {% endif %}
+      {% if not (imx415_tuning_stat is defined and imx415_tuning_stat.stat.exists) %}
+      libcamera tuning 'imx415.json' missing for the {{ 'pisp' if imx462_is_pi5_pisp else 'vc4' }} pipeline;
+      {% endif %}
+      run 'sudo apt update && sudo apt full-upgrade' (kernel + libcamera) and reboot, then retry.
+  when: imx462_has_imx415 and not ((imx415_dtbo_stat is defined and imx415_dtbo_stat.stat.exists) and (imx415_tuning_stat is defined and imx415_tuning_stat.stat.exists))
+
+- name: Ensure camera_auto_detect=0 when an imx415 is configured
+  # Vendor requirement for the CAM-MIPI-IMX415: the firmware must not probe the
+  # camera port when the imx415 overlay is loaded. Only managed for imx415
+  # deployments — legacy sensors keep whatever the image ships.
+  lineinfile:
+    path: "{{ firmware_config }}"
+    regexp: '^camera_auto_detect=.*$'
+    line: "camera_auto_detect=0"
+  when: imx462_has_imx415
 
 - name: Ensure overlay for each configured camera (Pi 5 pisp, camN suffix)
   lineinfile:
@@ -28,9 +87,9 @@
   when: imx462_is_pi5_pisp
 
 - name: Ensure overlay for each configured camera (csi platform, no camN suffix)
-  # On the csi platform (Pi 3/4, Zero 2W) the imx290/imx327 overlays default to
-  # Unicam 1 (the standard camera connector); 'cam0' there selects the Compute
-  # Module CSI0 layout instead, so the suffix must be omitted.
+  # On the csi platform (Pi 3/4, Zero 2W) the imx290/imx327/imx415 overlays
+  # default to Unicam 1 (the standard camera connector); 'cam0' there selects
+  # the Compute Module CSI0 layout instead, so the suffix must be omitted.
   lineinfile:
     path: "{{ firmware_config }}"
     regexp: '^dtoverlay={{ camera.overlay }}(,[^\s]*)*\s*$'
@@ -47,3 +106,16 @@
     state: absent
   loop: [0, 1]
   when: item not in configured_camera_ids
+
+- name: Remove stale bare camera overlays (csi platform)
+  # Switching the sensor on a csi board (e.g. imx290 -> imx415 on the same
+  # connector) leaves the old bare `dtoverlay=...` line behind; two camera
+  # overlays would fight over Unicam 1. Keep every line whose overlay is still
+  # configured and only touch known camera overlays, never unrelated dtoverlay
+  # lines (vc4-kms-v3d, dwc2, ...).
+  lineinfile:
+    path: "{{ firmware_config }}"
+    regexp: '^dtoverlay={{ item }}(,.*)?\s*$'
+    state: absent
+  loop: "{{ known_camera_overlays | difference(configured_camera_overlays) }}"
+  when: not imx462_is_pi5_pisp

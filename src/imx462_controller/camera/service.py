@@ -37,6 +37,19 @@ tracer = get_tracer("imx462_controller.camera")
 MIN_FRAME_US = 16_666  # 1/60 s
 IMX290_MAX_EXPOSURE_US = 115_686_258  # sensor max (~115.7 s), used as a fallback bound
 
+
+def _min_frame_us(mode: CameraMode | None) -> int:
+    """Minimum frame duration (us) for a mode, derived from its framerate.
+
+    Fast sensors (imx290 @ 60 fps) floor at ~1/60 s; low-framerate sensors such
+    as the imx415 (~15 fps full-array readout on 2-lane csi platforms) need a
+    ~67 ms floor — a fixed 1/60 s assumption would request an out-of-range
+    ``FrameDurationLimits`` from libcamera.
+    """
+    if mode is None or mode.framerate <= 0:
+        return MIN_FRAME_US
+    return math.ceil(1_000_000 / mode.framerate)
+
 # Fixed bitrate for the always-on MJPEG live view. Pinned (instead of picamera2's
 # framerate-scaled default) so low-framerate sensor modes (e.g. imx708 4K at
 # ~14 fps) do not collapse the bitrate and cause macroblocking in the live feed.
@@ -105,6 +118,12 @@ class CameraCapabilities:
     exposure_max_us: int = IMX290_MAX_EXPOSURE_US
     gain_min: float = 1.0
     gain_max: float = 31.6
+    # Minimum frame duration (us) of the camera's configured default mode (or
+    # of its fastest advertised mode when no default is known) — the safe floor
+    # clients that never switch modes can request FrameDurationLimits at.
+    # Low-framerate sensors (imx415, default 4K @ 15 fps) report ~66 667 µs;
+    # 60 fps sensors report ~16 667 µs.
+    min_frame_duration_us: int = MIN_FRAME_US
     supports_manual_exposure: bool = True
     supports_raw12: bool = True
 
@@ -115,6 +134,7 @@ class CameraCapabilities:
             "exposure_max_us": self.exposure_max_us,
             "gain_min": self.gain_min,
             "gain_max": self.gain_max,
+            "min_frame_duration_us": self.min_frame_duration_us,
             "supports_manual_exposure": self.supports_manual_exposure,
             "supports_raw12": self.supports_raw12,
         }
@@ -204,6 +224,15 @@ _MODEL_MODES: dict[str, list[CameraMode]] = {
         CameraMode(width=2592, height=1944, framerate=15),
     ],
     "imx296": [CameraMode(width=1456, height=1088, framerate=60)],
+    "imx415": [  # Inno Maker CAM-MIPI-IMX415 (RAW10 only)
+        # Full-array 3864x2192 readout; 2-lane csi platforms (Pi 3/4, Zero 2 W)
+        # are bandwidth-bound to ~15-17 fps at any output size, so the 30 fps
+        # profile only reaches its rate on a 4-lane port (Pi 5 CAM1 with the
+        # `4lane` overlay param); elsewhere libcamera clamps to the 2-lane
+        # ceiling.
+        CameraMode(width=3840, height=2160, framerate=15),
+        CameraMode(width=3840, height=2160, framerate=30),
+    ],
 }
 
 # (exposure_min_us, exposure_max_us, gain_min, gain_max) fallback bounds. These
@@ -216,6 +245,10 @@ _MODEL_BOUNDS: dict[str, tuple[int, int, float, float]] = {
     "imx477": (MIN_FRAME_US, 200_000_000, 1.0, 16.0),
     "ov5647": (MIN_FRAME_US, 6_000_000, 1.0, 8.0),
     "imx296": (MIN_FRAME_US, 100_000, 1.0, 16.0),
+    # IMX415: 30 dB max gain (0.3 dB x 100 steps) ~= ISO 3160; the 30 s exposure
+    # ceiling mirrors the UI ladder (20-bit VMAX permits much more; runtime
+    # libcamera reads override these approximations anyway).
+    "imx415": (MIN_FRAME_US, 30_000_000, 1.0, 31.6),
 }
 
 
@@ -270,7 +303,27 @@ def _read_sensor_modes(picam2: Any) -> list[CameraMode]:
     return modes
 
 
-def read_capabilities(picam2: Any) -> CameraCapabilities:
+def _min_frame_across(modes: list[CameraMode]) -> int:
+    """Smallest minimum frame duration (us) over the advertised modes."""
+    if not modes:
+        return MIN_FRAME_US
+    return min(_min_frame_us(mode) for mode in modes)
+
+
+def _min_frame_for(default_mode: CameraMode | None, modes: list[CameraMode]) -> int:
+    """Frame-duration floor advertised in capabilities.
+
+    Prefers the configured default mode (the one the camera runs unless a
+    client changes it); falls back to the fastest advertised mode when no
+    default is known. Clients that never switch modes (e.g. cat-watcher) can
+    floor their ``FrameDurationLimits`` at this value safely.
+    """
+    if default_mode is not None:
+        return _min_frame_us(default_mode)
+    return _min_frame_across(modes)
+
+
+def read_capabilities(picam2: Any, default_mode: CameraMode | None = None) -> CameraCapabilities:
     """Read authoritative capabilities (modes + control bounds) from libcamera."""
     caps = CameraCapabilities(modes=_read_sensor_modes(picam2))
     controls = getattr(picam2, "camera_controls", None) or {}
@@ -282,6 +335,7 @@ def read_capabilities(picam2: Any) -> CameraCapabilities:
     if isinstance(gain, (tuple, list)) and len(gain) >= 2:
         caps.gain_min = float(gain[0])
         caps.gain_max = float(gain[1])
+    caps.min_frame_duration_us = _min_frame_for(default_mode, caps.modes)
     caps.supports_manual_exposure = (
         "ExposureTime" in controls and "AnalogueGain" in controls
     )
@@ -310,12 +364,14 @@ def _capabilities_for_model(model: str, default_mode: CameraMode | None = None) 
         1.0,
         31.6,
     )
+    modes = _modes_for_model(model, default_mode)
     return CameraCapabilities(
-        modes=_modes_for_model(model, default_mode),
+        modes=modes,
         exposure_min_us=exposure_min,
         exposure_max_us=exposure_max,
         gain_min=gain_min,
         gain_max=gain_max,
+        min_frame_duration_us=_min_frame_for(default_mode, modes),
         supports_manual_exposure=True,
         supports_raw12="imx290" in model.lower(),
     )
@@ -468,11 +524,22 @@ class CameraWorker:
         behind ~10 in-flight frames — minutes at long exposures — so it is baked
         in via ``configure_mode`` instead (the same path the snapshot capture
         uses), making the change take effect on the next frame.
+
+        ``FrameDurationLimits`` entries below the active mode's minimum frame
+        time (1/framerate) are raised to that floor, so a client built around
+        60 fps sensors (e.g. a hard-coded 1/60 s floor) cannot stall or fail a
+        low-framerate sensor such as the imx415 at ~15 fps.
         """
         with self._lock, tracer.start_as_current_span("camera.set_controls"):
             normalized = _sanitize_controls(controls)
             if not normalized:
                 return
+            limits = normalized.get("FrameDurationLimits")
+            if limits:
+                floor = _min_frame_us(self._mode if self._mode is not None else self._default_mode)
+                normalized["FrameDurationLimits"] = tuple(
+                    max(int(value), floor) for value in limits
+                )
             self._controls.update(normalized)
             if not self._started:
                 self._ensure_started()
@@ -494,7 +561,7 @@ class CameraWorker:
             if self._capabilities is None:
                 if self._started:
                     return None
-                self._capabilities = read_capabilities(self._picam2)
+                self._capabilities = read_capabilities(self._picam2, self._default_mode)
             return self._capabilities
 
     def current_settings(self) -> dict[str, Any]:
@@ -523,7 +590,7 @@ class CameraWorker:
         """
         while not self._metadata_stop.wait(0.2):
             limits = self._controls.get("FrameDurationLimits")
-            frame_us = limits[0] if limits else MIN_FRAME_US
+            frame_us = limits[0] if limits else _min_frame_us(self._mode)
             if frame_us > 1_000_000:
                 # Slow frame rate: a metadata read would block for the whole
                 # frame duration and stall the next snapshot. Skip until the
@@ -628,7 +695,7 @@ class CameraWorker:
         return frames[0]
 
     def _apply_snapshot_exposure(self, exposure_us: int, gain: float) -> None:
-        frame = max(exposure_us, MIN_FRAME_US)
+        frame = max(exposure_us, _min_frame_us(self._mode))
         controls = {
             "AeEnable": False,
             "ExposureTime": exposure_us,
