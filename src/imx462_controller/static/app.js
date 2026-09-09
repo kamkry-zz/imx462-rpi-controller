@@ -21,7 +21,7 @@ const MIN_FRAME_US = 16666; // 1/60s (fallback floor for unknown modes)
 // boards) need ~67 ms — a fixed 1/60 s floor would exceed their capabilities.
 function minFrameUs() {
   try {
-    if (el.modeSelect && el.modeSelect.value) {
+    if (el.modeSelect?.value) {
       const fps = JSON.parse(el.modeSelect.value).framerate;
       if (Number.isFinite(fps) && fps > 0) return Math.ceil(1000000 / fps);
     }
