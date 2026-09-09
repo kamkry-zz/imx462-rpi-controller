@@ -320,11 +320,13 @@ async function refreshCapabilities(id) {
     const camera = state.cameras.find((c) => c.id === id);
     if (camera) {
       camera.capabilities = caps;
-      camera.modes = caps.modes;
     }
     if (state.selectedId === id && camera) {
-      populateModes(camera);
-      selectDefaultMode();
+      // Do NOT overwrite camera.modes from caps.modes: the dropdown
+      // intentionally lists the catalog profiles (e.g. imx415 4K @ 15/30),
+      // while capabilities modes reflect the sensor's native readout modes
+      // (a single 3864x2192 mode for the imx415), which would collapse the
+      // profile list. Only the exposure/gain bounds refresh here.
       populateShutter();
       populateIso();
     }
