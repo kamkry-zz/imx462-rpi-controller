@@ -44,9 +44,12 @@ class MqttPublisher:
             self._client.on_connect = self._on_connect
             self._client.on_disconnect = self._on_disconnect
             self._client.reconnect_delay_set(min_delay=1, max_delay=60)
-            self._client.connect(self._host, self._port, keepalive=60)
+            # connect_async + loop_start keeps retrying via the network loop
+            # when the broker is unreachable at startup; a synchronous connect
+            # would fail once and leave telemetry dead until a restart.
+            self._client.connect_async(self._host, self._port, keepalive=60)
             self._client.loop_start()
-            logger.info("MQTT connected to %s:%s", self._host, self._port)
+            logger.info("MQTT client started (async connect) to %s:%s", self._host, self._port)
         except Exception as exc:  # noqa: BLE001 - never crash the app on MQTT errors
             logger.warning("MQTT connect failed: %s", exc)
             self._client = None
@@ -55,8 +58,8 @@ class MqttPublisher:
         self._heartbeat_stop.set()
         if self._client is not None:
             try:
-                self._client.loop_stop()
                 self._client.disconnect()
+                self._client.loop_stop()
             except Exception:
                 logger.debug("MQTT disconnect error", exc_info=True)
             self._client = None

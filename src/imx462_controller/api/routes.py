@@ -8,7 +8,7 @@ from typing import Any
 
 import anyio
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.responses import FileResponse, StreamingResponse
 
 from ..camera.service import CameraManager, CameraMode
@@ -52,8 +52,8 @@ class StreamModeRequest(BaseModel):
 
 
 class SnapshotRequest(BaseModel):
-    exposure_us: int
-    gain: float = 1.0
+    exposure_us: int = Field(gt=0)
+    gain: float = Field(default=1.0, gt=0)
 
 
 def _manager(request: Request) -> CameraManager:
@@ -149,6 +149,8 @@ def set_controls(camera_id: int, body: ControlsRequest, request: Request):
         raise HTTPException(status_code=404, detail=f"Camera {camera_id} not found")
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid controls: {exc}")
     _mqtt(request).publish_event("controls_set", camera_id=camera_id, controls=body.controls)
     return {"ok": True, "camera_id": camera_id, "controls": body.controls}
 
@@ -247,12 +249,15 @@ def stop_recording(camera_id: int, request: Request):
 @router.get("/cameras/{camera_id}/stream", responses=_CAMERA_ERROR_RESPONSES)
 async def stream(camera_id: int, request: Request):
     manager = _manager(request)
+    # Camera lookup/subscribe take the worker lock (and may configure the
+    # camera); run them off the event loop so a slow snapshot or remux cannot
+    # freeze every other request, stream, and WebSocket.
     try:
-        worker = manager.get_worker(camera_id)
+        worker = await anyio.to_thread.run_sync(manager.get_worker, camera_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Camera {camera_id} not found")
 
-    q = worker.subscribe()
+    q = await anyio.to_thread.run_sync(worker.subscribe)
 
     async def _frames():
         try:
@@ -263,7 +268,10 @@ async def stream(camera_id: int, request: Request):
                     continue
                 yield BOUNDARY + b"\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
         finally:
-            worker.unsubscribe(q)
+            # Shielded so the subscriber is removed even when the client
+            # disconnect cancelled this generator.
+            with anyio.CancelScope(shield=True):
+                await anyio.to_thread.run_sync(worker.unsubscribe, q)
 
     return StreamingResponse(_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
 

@@ -42,7 +42,9 @@ of truth for planning; `openspec/project.md` holds the full stack/domain context
 - **Min frame duration is per-mode** (`1/framerate`), not a fixed 1/60 s: on
   low-framerate sensors (imx415 ~15 fps) the manual-exposure/snapshot paths
   would otherwise request an out-of-range `FrameDurationLimits`. Do not reintroduce
-  a hard-coded 60 fps floor for snapshot/control frame durations.
+  a hard-coded 60 fps floor for snapshot/control frame durations. Stored limits are
+  re-floored when the mode changes (`configure_mode`) and malformed limits are
+  dropped by `_sanitize_controls` (never crash control application).
 - Supported modes and exposure/gain bounds are **read from libcamera at runtime**
   (`Picamera2.sensor_modes` / `camera_controls`) and surfaced via
   `GET /api/cameras/{id}/capabilities`; a static per-model catalog is only a fallback
@@ -74,16 +76,33 @@ of truth for planning; `openspec/project.md` holds the full stack/domain context
   Pi 3/4/Zero 2W — verified on `raspberrypi-zero-2w-1`); the live path never
   uses raw (JPEG comes from `main`, MJPEG from `lores`).
 - Capabilities are read via `Picamera2.sensor_modes`, which **reconfigures the
-  camera internally** and raises if the camera is running — `read_capabilities`
-  runs on the worker executor under the camera lock, caches its result, and
-  skips the dynamic read while the camera is started (static catalog fallback).
-- Live view uses a **persistent MJPEG encoder** + a feed thread that fans frames
-  out to per-client subscriber queues (the stream is never torn down on control
-  changes). `set_controls` applies at **runtime** (no reconfigure); only
-  `configure_mode` (mode change) and `set_flip` reconfigure (aborting the
+  camera internally** and raises if the camera is running — the full read runs on
+  the worker executor under the camera lock and caches its result. While the
+  camera **is** started, exposure/gain bounds are read from `camera_controls`
+  (valid at runtime) and merged onto the static per-model catalog, so clients get
+  real per-sensor bounds instead of the approximations even after the camera
+  starts (the frontend starts the stream before/concurrently with the
+  capabilities request).
+- Live view uses a **persistent MJPEG encoder** + **one feed thread for the
+  worker's lifetime** that fans frames out to per-client subscriber queues (the
+  stream is never torn down on control changes). Encoder teardown only clears the
+  output; do **not** recreate the feed thread per reconfigure — that leaked one
+  thread per control change (every manual shutter/ISO update reconfigures via
+  `FrameDurationLimits`). `set_controls` applies at **runtime** (no reconfigure);
+  only `configure_mode` (mode change) and `set_flip` reconfigure (aborting the
   in-flight frame).
+- **Any reconfigure auto-finalizes an active recording** (`configure_mode` is the
+  single choke point): the H.264 encoder is stopped under the camera lock and the
+  raw path is remuxed **off-lock** — asynchronously for a reconfigure, synchronously
+  for `stop_recording`/shutdown (which must report the final path). Never drop the
+  raw path in teardown: before this, any mode/flip/controls change silently lost
+  the recording (`stop_recording` returned `None` and the file was never remuxed).
+  ffmpeg must not run while holding the camera lock — that froze live-view fan-out
+  and every control op on that camera.
 - MQTT (paho-mqtt) publishes operation events, heartbeat/status, and metrics to an
-  external broker.
+  external broker. Use `connect_async()` + `loop_start()` (not a synchronous
+  `connect()`): a broker that is down at startup must not permanently disable
+  telemetry — paho's network loop retries with the configured backoff.
 - OTel exports OTLP (metrics + traces + correlated logs) to the k3s observability
   stack; the endpoint is configurable. NOTE: the cluster collector is
   `otel-collector.observability.svc` (cluster-internal) — the external Pi needs a
@@ -122,7 +141,9 @@ of truth for planning; `openspec/project.md` holds the full stack/domain context
   reconfigures the camera** so any pending exposure change (e.g. leaving a long
   single-frame exposure) applies immediately instead of lagging ~10 in-flight
   frames; the UI resets to auto exposure when the single-frame button is
-  toggled off.
+  toggled off. Snapshot requests are clamped to the sensor's read bounds
+  (server-side against cached capabilities, client-side against `capsBounds()`)
+  and must be positive (`SnapshotRequest` field constraints).
 - Vendor tuning file `innomakerpi5_imx290.json` is installed as
   `/usr/share/libcamera/ipa/rpi/pisp/imx290.json` (original backed up to
   `imx290.json.rpi-default`) to correct the IMX462 colour cast. The env var

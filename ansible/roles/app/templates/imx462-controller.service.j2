@@ -10,6 +10,9 @@ WorkingDirectory={{ imx462_app_dir }}
 ExecStart={{ imx462_venv }}/bin/imx462-controller
 Restart=on-failure
 RestartSec=5
+# Long enough to remux an active recording to MP4 on shutdown (ffmpeg's own
+# timeout is 120 s); the systemd default of 90 s could SIGKILL mid-remux.
+TimeoutStopSec=180
 EnvironmentFile={{ imx462_app_dir }}/.env
 
 [Install]

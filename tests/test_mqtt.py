@@ -66,3 +66,51 @@ def test_connected_reflects_client():
     assert pub.connected is False
     pub._client = FakeMqttClient()
     assert pub.connected is True
+
+
+def test_start_uses_async_connect_for_retries(monkeypatch):
+    # A synchronous connect() would fail once and leave telemetry dead when the
+    # broker is down at startup; the async connect lets paho's network loop keep
+    # retrying with the configured backoff.
+    import sys
+    import types
+
+    calls = {}
+
+    class FakePahoClient:
+        def __init__(self, api_version, client_id=None):
+            self.api_version = api_version
+
+        def username_pw_set(self, username, password):
+            calls["credentials"] = (username, password)
+
+        def reconnect_delay_set(self, min_delay, max_delay):
+            calls["reconnect_delay"] = (min_delay, max_delay)
+
+        def connect_async(self, host, port, keepalive=60):
+            calls["connect_async"] = (host, port, keepalive)
+
+        def loop_start(self):
+            calls["loop_start"] = True
+
+        def is_connected(self):
+            return False
+
+    class FakeCallbackAPIVersion:
+        VERSION2 = object()
+
+    module = types.ModuleType("paho.mqtt.client")
+    module.Client = FakePahoClient
+    module.CallbackAPIVersion = FakeCallbackAPIVersion
+    paho = types.ModuleType("paho")
+    paho.mqtt = types.ModuleType("paho.mqtt")
+    monkeypatch.setitem(sys.modules, "paho", paho)
+    monkeypatch.setitem(sys.modules, "paho.mqtt", paho.mqtt)
+    monkeypatch.setitem(sys.modules, "paho.mqtt.client", module)
+
+    pub = make_publisher()
+    pub.start()
+    assert pub._client is not None
+    assert calls["connect_async"] == ("localhost", 1883, 60)
+    assert calls["loop_start"] is True
+    assert calls["reconnect_delay"] == (1, 60)
