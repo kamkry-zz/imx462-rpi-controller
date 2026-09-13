@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import threading
+import time
+
 import pytest
 
 from imx462_controller.camera.service import (
     MJPEG_BITRATE,
+    CameraCapabilities,
     CameraManager,
     CameraMode,
     CameraWorker,
@@ -341,7 +345,8 @@ def test_sanitize_controls_strips_none_and_nan():
     assert "ExposureTime" not in result
     assert "AnalogueGain" not in result
     assert result["Brightness"] == 0.1
-    assert result["FrameDurationLimits"] == (33333,)
+    # Malformed limits (not a numeric pair) are dropped, never passed on.
+    assert "FrameDurationLimits" not in result
     assert result["ColourGains"] == (1.5,)
 
 
@@ -365,7 +370,6 @@ def test_set_controls_passes_flicker_period(capture_config):
 
 
 def test_current_settings_reads_metadata(capture_config):
-    import time
 
     fake = FakePicamera2()
     default = CameraMode(width=1920, height=1080, bit_depth=12, framerate=60)
@@ -587,7 +591,7 @@ def test_worker_capabilities_cached_after_first_read(capture_config):
     assert worker.capabilities() is caps
 
 
-def test_worker_capabilities_skipped_while_started(capture_config):
+def test_worker_capabilities_without_fallback_returns_none_while_started(capture_config):
     fake = FakePicamera2()
     worker = CameraWorker(0, "cam0", fake, capture_config)
     worker.configure_mode(CameraMode(width=1920, height=1080, bit_depth=12, framerate=60))
@@ -625,3 +629,193 @@ def test_default_mjpeg_encoder_factory_pins_bitrate(monkeypatch):
     encoder, output = _default_mjpeg_encoder_factory("stream-output")
     assert encoder.kwargs == {"bitrate": MJPEG_BITRATE}
     assert output == "stream-output"
+
+
+def test_configure_mode_refloors_stored_frame_duration(capture_config):
+    # A limit stored for a 60 fps mode (16 667 µs) is out of range for a 15 fps
+    # mode; configure must raise it to the new mode's floor instead of letting
+    # libcamera reject the start.
+    fake = FakePicamera2()
+    default = CameraMode(width=1920, height=1080, bit_depth=12, framerate=60)
+    worker = CameraWorker(0, "cam0", fake, capture_config, default_mode=default)
+    worker._controls = {"FrameDurationLimits": (16667, 16667)}
+    worker.configure_mode(CameraMode(width=3840, height=2160, framerate=15))
+    assert fake.config["controls"]["FrameDurationLimits"] == (66667, 66667)
+
+
+def test_set_controls_drops_malformed_frame_duration(capture_config):
+    fake = FakePicamera2()
+    default = CameraMode(width=1920, height=1080, bit_depth=12, framerate=60)
+    worker = CameraWorker(0, "cam0", fake, capture_config, default_mode=default)
+    worker.configure_mode(default)
+    fake.controls = None
+    fake.config = None
+    for payload in (["abc", "def"], 50000, [50000], [None, None], [1, 2, 3], "bad"):
+        worker.set_controls({"FrameDurationLimits": payload})
+        assert fake.controls is None
+        assert fake.config is None
+
+    # Valid controls alongside a malformed limit still apply at runtime.
+    worker.set_controls({"Brightness": 0.1, "FrameDurationLimits": "bad"})
+    assert fake.controls == {"Brightness": 0.1}
+
+
+def test_reconfigure_finalizes_active_recording(capture_config, tmp_path, monkeypatch):
+    from imx462_controller.camera import service
+
+    cfg = CaptureConfig(output_dir=str(tmp_path / "media"), video_format="mp4")
+    fake = FakePicamera2()
+    worker = CameraWorker(0, "cam0", fake, cfg, encoder_factory=lambda p: (object(), str(p)))
+    worker.configure_mode(CameraMode(width=1920, height=1080, bit_depth=12, framerate=60))
+    worker.start_recording()
+
+    done = threading.Event()
+    seen = []
+
+    def fake_finalize(raw_path, video_format):
+        seen.append((raw_path, video_format))
+        done.set()
+        return raw_path.with_suffix(".mp4")
+
+    monkeypatch.setattr(service, "_finalize_video", fake_finalize)
+    worker.set_controls(
+        {"AeEnable": False, "ExposureTime": 500000, "FrameDurationLimits": [500000, 500000]}
+    )
+    assert worker.recording is False
+    assert done.wait(2.0), "active recording was not finalized"
+    assert seen[0][1] == "mp4"
+    assert worker.stop_recording() is None
+
+
+def test_stop_recording_returns_finalized_mp4(tmp_path, monkeypatch):
+    from imx462_controller.camera import service
+
+    cfg = CaptureConfig(output_dir=str(tmp_path / "media"), video_format="mp4")
+    fake = FakePicamera2()
+    worker = CameraWorker(0, "cam0", fake, cfg, encoder_factory=lambda p: (object(), str(p)))
+    worker.configure_mode(CameraMode(width=1920, height=1080, bit_depth=12, framerate=60))
+    worker.start_recording()
+
+    def fake_finalize(raw_path, video_format):
+        final = raw_path.with_suffix(".mp4")
+        final.write_bytes(b"mp4data")
+        return final
+
+    monkeypatch.setattr(service, "_finalize_video", fake_finalize)
+    path = worker.stop_recording()
+    assert path is not None
+    assert path.suffix == ".mp4"
+
+
+def test_feed_thread_persists_across_reconfigures(capture_config):
+    import uuid
+
+    name = f"feed-{uuid.uuid4().hex[:8]}"
+    fake = FakePicamera2()
+    worker = CameraWorker(
+        0, name, fake, capture_config, mjpeg_encoder_factory=lambda output: (object(), output)
+    )
+    worker.configure_mode(CameraMode(width=1920, height=1080, bit_depth=12, framerate=60))
+    worker.subscribe()
+    thread_before = worker._feed_thread
+    for _ in range(3):
+        worker.configure_mode(CameraMode(width=1920, height=1080, bit_depth=12, framerate=60))
+
+    assert worker._feed_thread is thread_before
+    feeds = [t for t in threading.enumerate() if t.name == f"mjpeg-feed-{name}"]
+    assert len(feeds) == 1
+
+    worker.close()
+    assert not worker._feed_thread.is_alive()
+
+
+def test_capabilities_while_started_uses_runtime_bounds(capture_config):
+    fake = FakePicamera2()
+    default = CameraMode(width=1920, height=1080, bit_depth=12, framerate=60)
+    worker = CameraWorker(
+        0,
+        "cam0",
+        fake,
+        capture_config,
+        default_mode=default,
+        fallback_capabilities=_capabilities_for_model("imx290", default),
+    )
+    worker.configure_mode(default)
+    caps = worker.capabilities()
+    assert caps is not None
+    assert caps.exposure_max_us == 115686258  # from libcamera control info
+    assert caps.gain_max == 31.6
+    assert caps.min_frame_duration_us == 16667
+    assert caps.supports_raw12 is True
+
+
+def test_snapshot_clamps_to_capabilities(capture_config):
+    fake = FakePicamera2()
+    default = CameraMode(width=320, height=240, bit_depth=12, framerate=60)
+    worker = CameraWorker(0, "cam0", fake, capture_config, default_mode=default)
+    worker._capabilities = CameraCapabilities(exposure_max_us=1_000_000, gain_max=8.0)
+    worker.configure_mode(default)
+    worker.capture_snapshot(exposure_us=30_000_000, gain=20.0)
+    assert fake.controls["ExposureTime"] == 1_000_000
+    assert fake.controls["AnalogueGain"] == 8.0
+
+
+def test_failed_reconfigure_still_finalizes_recording(tmp_path, monkeypatch):
+    from imx462_controller.camera import service
+
+    class FailingPicamera(FakePicamera2):
+        def create_video_configuration(self, **kwargs):
+            raise RuntimeError("configure failed")
+
+    cfg = CaptureConfig(output_dir=str(tmp_path / "media"), video_format="mp4")
+    fake = FailingPicamera()
+    worker = CameraWorker(0, "cam0", fake, cfg, encoder_factory=lambda p: (object(), str(p)))
+    worker._started = True
+    worker._recording = True
+    worker._recording_raw_path = tmp_path / "raw.h264"
+    worker._video_encoder = object()
+
+    done = threading.Event()
+    monkeypatch.setattr(service, "_finalize_video", lambda raw, fmt: (done.set(), raw)[1])
+    mode = CameraMode(width=1920, height=1080, bit_depth=12, framerate=60)
+    with pytest.raises(RuntimeError):
+        worker.configure_mode(mode)
+
+    assert done.wait(2.0), "failed reconfigure stranded the recording"
+    assert worker.recording is False
+    assert worker._recording_raw_path is None
+
+
+def test_close_finalizes_active_recording(tmp_path, monkeypatch):
+    from imx462_controller.camera import service
+
+    cfg = CaptureConfig(output_dir=str(tmp_path / "media"), video_format="mp4")
+    fake = FakePicamera2()
+    worker = CameraWorker(0, "cam0", fake, cfg, encoder_factory=lambda p: (object(), str(p)))
+    worker.configure_mode(CameraMode(width=1920, height=1080, bit_depth=12, framerate=60))
+    worker.start_recording()
+
+    seen = []
+    monkeypatch.setattr(
+        service, "_finalize_video", lambda raw, fmt: (seen.append(fmt), raw.with_suffix(".mp4"))[1]
+    )
+    worker.close()
+    assert worker.recording is False
+    assert seen == ["mp4"]
+
+
+def test_runtime_capabilities_uses_running_mode_floor(capture_config):
+    fake = FakePicamera2()
+    default = CameraMode(width=3840, height=2160, framerate=15)
+    worker = CameraWorker(
+        0,
+        "cam0",
+        fake,
+        capture_config,
+        default_mode=default,
+        fallback_capabilities=_capabilities_for_model("imx415", default),
+    )
+    worker.configure_mode(CameraMode(width=1920, height=1080, framerate=60))
+    caps = worker.capabilities()
+    assert caps is not None
+    assert caps.min_frame_duration_us == 16667  # running mode, not the 15 fps default

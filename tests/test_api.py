@@ -262,3 +262,22 @@ def test_snapshot_native(client):
     res = client.post("/api/cameras/0/snapshot", json={"exposure_us": 2000000, "gain": 1.0})
     assert res.status_code == 200
     assert res.json()["path"].endswith(".jpg")
+
+
+def test_snapshot_rejects_nonpositive_exposure(client):
+    assert (
+        client.post("/api/cameras/0/snapshot", json={"exposure_us": 0, "gain": 1.0}).status_code
+        == 422
+    )
+    assert (
+        client.post("/api/cameras/0/snapshot", json={"exposure_us": -5, "gain": 1.0}).status_code
+        == 422
+    )
+    assert (
+        client.post("/api/cameras/0/snapshot", json={"exposure_us": 1000, "gain": -1.0}).status_code
+        == 422
+    )
+
+
+def test_stream_unknown_camera_returns_404(client):
+    assert client.get("/api/cameras/99/stream").status_code == 404

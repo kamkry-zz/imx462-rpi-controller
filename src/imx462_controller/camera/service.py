@@ -56,20 +56,47 @@ def _min_frame_us(mode: CameraMode | None) -> int:
 MJPEG_BITRATE = 20_000_000
 
 
+def _coerce_frame_duration_limits(value: Any) -> tuple[int, int] | None:
+    """Validate a ``FrameDurationLimits`` payload as a pair of integer µs values.
+
+    Returns ``None`` for anything malformed (scalar, wrong length, non-numeric)
+    so a bad client payload can never crash control application or reconfigure.
+    """
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return None
+    try:
+        low, high = (float(entry) for entry in value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(low) or math.isnan(high):
+        return None
+    return int(low), int(high)
+
+
+def _is_missing(value: Any) -> bool:
+    """True for values that must never reach libcamera (``None``/NaN)."""
+    return value is None or (isinstance(value, float) and math.isnan(value))
+
+
+def _sanitize_control_value(key: str, value: Any) -> Any:
+    """Return the sanitized value for one control, or ``None`` to drop it."""
+    if key == "FrameDurationLimits":
+        return _coerce_frame_duration_limits(value)
+    if _is_missing(value):
+        return None
+    if isinstance(value, (list, tuple)):
+        filtered = tuple(entry for entry in value if not _is_missing(entry))
+        return filtered or None
+    return value
+
+
 def _sanitize_controls(controls: dict[str, Any]) -> dict[str, Any]:
-    """Drop None/NaN values so a bad payload can never stall the sensor."""
+    """Drop None/NaN values and malformed limits so a bad payload never crashes."""
     clean: dict[str, Any] = {}
     for key, value in controls.items():
-        if value is None:
-            continue
-        if isinstance(value, float) and math.isnan(value):
-            continue
-        if isinstance(value, (list, tuple)):
-            filtered = [v for v in value if v is not None and not (isinstance(v, float) and math.isnan(v))]
-            if not filtered:
-                continue
-            value = tuple(filtered)
-        clean[key] = value
+        sanitized = _sanitize_control_value(key, value)
+        if sanitized is not None:
+            clean[key] = sanitized
     return clean
 
 
@@ -138,6 +165,19 @@ class CameraCapabilities:
             "supports_manual_exposure": self.supports_manual_exposure,
             "supports_raw12": self.supports_raw12,
         }
+
+    def copy(self) -> CameraCapabilities:
+        """Return a copy with its own modes list, for per-read adjustments."""
+        return CameraCapabilities(
+            modes=list(self.modes),
+            exposure_min_us=self.exposure_min_us,
+            exposure_max_us=self.exposure_max_us,
+            gain_min=self.gain_min,
+            gain_max=self.gain_max,
+            min_frame_duration_us=self.min_frame_duration_us,
+            supports_manual_exposure=self.supports_manual_exposure,
+            supports_raw12=self.supports_raw12,
+        )
 
 
 @dataclass
@@ -323,22 +363,25 @@ def _min_frame_for(default_mode: CameraMode | None, modes: list[CameraMode]) -> 
     return _min_frame_across(modes)
 
 
+def _apply_control_bounds(caps: CameraCapabilities, controls: dict[str, Any]) -> None:
+    """Overwrite exposure/gain bounds in ``caps`` from libcamera control info."""
+    exposure = controls.get("ExposureTime")
+    if isinstance(exposure, (tuple, list)) and len(exposure) >= 2:
+        caps.exposure_min_us = int(exposure[0])
+        caps.exposure_max_us = int(exposure[1])
+    gain = controls.get("AnalogueGain")
+    if isinstance(gain, (tuple, list)) and len(gain) >= 2:
+        caps.gain_min = float(gain[0])
+        caps.gain_max = float(gain[1])
+    caps.supports_manual_exposure = "ExposureTime" in controls and "AnalogueGain" in controls
+
+
 def read_capabilities(picam2: Any, default_mode: CameraMode | None = None) -> CameraCapabilities:
     """Read authoritative capabilities (modes + control bounds) from libcamera."""
     caps = CameraCapabilities(modes=_read_sensor_modes(picam2))
     controls = getattr(picam2, "camera_controls", None) or {}
-    exposure = controls.get("ExposureTime")
-    gain = controls.get("AnalogueGain")
-    if isinstance(exposure, (tuple, list)) and len(exposure) >= 2:
-        caps.exposure_min_us = int(exposure[0])
-        caps.exposure_max_us = int(exposure[1])
-    if isinstance(gain, (tuple, list)) and len(gain) >= 2:
-        caps.gain_min = float(gain[0])
-        caps.gain_max = float(gain[1])
+    _apply_control_bounds(caps, controls)
     caps.min_frame_duration_us = _min_frame_for(default_mode, caps.modes)
-    caps.supports_manual_exposure = (
-        "ExposureTime" in controls and "AnalogueGain" in controls
-    )
     caps.supports_raw12 = any(m.bit_depth == 12 for m in caps.modes)
     return caps
 
@@ -399,6 +442,7 @@ class CameraWorker:
         default_mode: CameraMode | None = None,
         encoder_factory: Any = None,
         mjpeg_encoder_factory: Any = None,
+        fallback_capabilities: CameraCapabilities | None = None,
     ) -> None:
         self._id = camera_id
         self._name = name
@@ -409,6 +453,7 @@ class CameraWorker:
         self._default_mode = default_mode
         self._encoder_factory = encoder_factory or _default_encoder_factory
         self._mjpeg_encoder_factory = mjpeg_encoder_factory or _default_mjpeg_encoder_factory
+        self._fallback_capabilities = fallback_capabilities
         self._lock = threading.RLock()
         self._started = False
         self._recording = False
@@ -433,6 +478,13 @@ class CameraWorker:
             target=self._metadata_loop, daemon=True, name=f"settings-{self._name}"
         )
         self._metadata_thread.start()
+        # One persistent feed thread for the worker's lifetime: encoder teardown
+        # on reconfigure only clears ``_stream_output``, so frames resume without
+        # leaking a thread per reconfigure.
+        self._feed_thread = threading.Thread(
+            target=self._feed_loop, daemon=True, name=f"mjpeg-feed-{self._name}"
+        )
+        self._feed_thread.start()
 
     @property
     def id(self) -> int:
@@ -469,9 +521,19 @@ class CameraWorker:
             self.configure_mode(self._default_mode)
 
     def configure_mode(self, mode: CameraMode) -> None:
-        """(Re)configure the sensor and start the camera."""
+        """(Re)configure the sensor and start the camera.
+
+        Any active recording is stopped and finalized before the reconfigure:
+        libcamera tears the encoder down on configure, so leaving it running
+        would silently lose the file. Finalization starts before any operation
+        that can raise, so even a failed reconfigure preserves the recording.
+        The remux runs off the camera lock (and off the caller's thread) so live
+        view and control operations are not stalled by ffmpeg.
+        """
         with self._lock, tracer.start_as_current_span("camera.configure_mode"):
-            self._teardown_encoders()
+            raw_path = self._teardown_encoders()
+            if raw_path is not None:
+                _finalize_recording(raw_path, self._video_format, wait=False)
             if self._started:
                 self._picam2.stop()
             lw, lh = _lores_size(mode.width, mode.height)
@@ -482,8 +544,17 @@ class CameraWorker:
                 # would conflict with the frame duration in the config.
                 controls.pop("ExposureTime", None)
                 controls.pop("AnalogueGain", None)
-            if "FrameDurationLimits" not in controls:
+            limits = _coerce_frame_duration_limits(controls.get("FrameDurationLimits"))
+            if limits is None:
+                # No (valid) manual frame duration: drive the mode's framerate.
+                controls.pop("FrameDurationLimits", None)
                 controls["FrameRate"] = mode.framerate
+            else:
+                # Re-floor stored limits for the new mode: a limit carried over
+                # from a faster mode is out of range for a slow sensor and would
+                # be rejected at start.
+                floor = _min_frame_us(mode)
+                controls["FrameDurationLimits"] = tuple(max(value, floor) for value in limits)
             sensor: dict[str, Any] = {"output_size": (mode.width, mode.height)}
             if mode.bit_depth is not None:
                 sensor["bit_depth"] = mode.bit_depth
@@ -538,7 +609,7 @@ class CameraWorker:
             if limits:
                 floor = _min_frame_us(self._mode if self._mode is not None else self._default_mode)
                 normalized["FrameDurationLimits"] = tuple(
-                    max(int(value), floor) for value in limits
+                    max(value, floor) for value in limits
                 )
             self._controls.update(normalized)
             if not self._started:
@@ -550,19 +621,35 @@ class CameraWorker:
             logger.info("Camera %s controls set: %s", self._name, normalized)
 
     def capabilities(self) -> CameraCapabilities | None:
-        """Read authoritative capabilities once, serialized with camera ops.
+        """Read authoritative capabilities, serialized with camera ops.
 
-        ``Picamera2.sensor_modes`` internally reconfigures the camera and
-        raises if it is already running, so the read takes the worker lock and
-        is skipped while the camera is started; the static per-model catalog
-        covers that case. The result is cached (sensor modes never change).
+        ``Picamera2.sensor_modes`` internally reconfigures the camera and raises
+        if it is already running, so the full read is only possible while
+        stopped; its result is cached (sensor modes never change). While the
+        camera is started, exposure/gain bounds are read from
+        ``camera_controls`` (which stays valid at runtime) and merged onto the
+        static per-model catalog, so clients still get the real per-sensor
+        bounds instead of the approximations.
         """
         with self._lock:
             if self._capabilities is None:
                 if self._started:
-                    return None
+                    return self._runtime_capabilities()
                 self._capabilities = read_capabilities(self._picam2, self._default_mode)
             return self._capabilities
+
+    def _runtime_capabilities(self) -> CameraCapabilities | None:
+        """Bounds from ``camera_controls`` while the camera is running."""
+        if self._fallback_capabilities is None:
+            return None
+        caps = self._fallback_capabilities.copy()
+        controls = getattr(self._picam2, "camera_controls", None) or {}
+        _apply_control_bounds(caps, controls)
+        if self._mode is not None:
+            # The frame floor belongs to the mode actually running, which can
+            # differ from the configured default after a client mode switch.
+            caps.min_frame_duration_us = _min_frame_us(self._mode)
+        return caps
 
     def current_settings(self) -> dict[str, Any]:
         """Return the latest gain/exposure read by the background metadata thread.
@@ -609,13 +696,21 @@ class CameraWorker:
                     "exposure_time": int(md.get("ExposureTime", 0)),
                 }
 
-    def _teardown_encoders(self) -> None:
+    def _teardown_encoders(self) -> Path | None:
+        """Stop all encoders; return the raw recording path for finalization."""
         self._stop_stream_encoder()
-        if self._video_encoder is not None:
-            self._picam2.stop_encoder(self._video_encoder)
-            self._video_encoder = None
+        return self._stop_video_encoder()
+
+    def _stop_video_encoder(self) -> Path | None:
+        """Stop the H.264 encoder and hand back the raw file to finalize."""
+        encoder = self._video_encoder
+        self._video_encoder = None
         self._recording = False
+        raw_path = self._recording_raw_path
         self._recording_raw_path = None
+        if encoder is not None:
+            self._picam2.stop_encoder(encoder)
+        return raw_path
 
     def _new_filename(self, ext: str) -> Path:
         self._ensure_output_dir()
@@ -662,6 +757,7 @@ class CameraWorker:
             import numpy as np
             from PIL import Image
 
+            exposure_us, gain = self._clamp_snapshot(exposure_us, gain)
             with self._metadata_lock:
                 self._capturing = True
                 try:
@@ -705,6 +801,15 @@ class CameraWorker:
         self._controls.update(controls)
         self._picam2.set_controls(controls)
 
+    def _clamp_snapshot(self, exposure_us: int, gain: float) -> tuple[int, float]:
+        """Clamp a snapshot request to the sensor's known bounds (if read)."""
+        caps = self._capabilities
+        if caps is None:
+            return exposure_us, gain
+        exposure_us = max(caps.exposure_min_us, min(exposure_us, caps.exposure_max_us))
+        gain = max(caps.gain_min, min(gain, caps.gain_max))
+        return exposure_us, gain
+
     def start_recording(self) -> None:
         with self._lock, tracer.start_as_current_span("camera.start_recording"):
             if self._recording:
@@ -722,16 +827,14 @@ class CameraWorker:
         with self._lock, tracer.start_as_current_span("camera.stop_recording"):
             if not self._recording:
                 return None
-            self._picam2.stop_encoder(self._video_encoder)
-            self._video_encoder = None
-            self._recording = False
-            raw_path = self._recording_raw_path
-            self._recording_raw_path = None
-            if raw_path is None:
-                return None
-            path = _finalize_video(raw_path, self._video_format)
-            logger.info("Recording stopped: %s", path)
-            return path
+            raw_path = self._stop_video_encoder()
+        if raw_path is None:
+            return None
+        # Remux outside the camera lock: ffmpeg can take a while and the feed
+        # thread (and every control op) needs the lock to keep live view alive.
+        path = _finalize_recording(raw_path, self._video_format, wait=True)
+        logger.info("Recording stopped: %s", path)
+        return path
 
     def subscribe(self) -> queue.Queue:
         """Register a live-view client; returns a queue of MJPEG frames."""
@@ -757,17 +860,14 @@ class CameraWorker:
         encoder, output = self._mjpeg_encoder_factory(self._stream_output)
         self._picam2.start_encoder(encoder, output, name="lores")
         self._mjpeg_encoder = encoder
-        self._feed_stop.clear()
-        self._feed_thread = threading.Thread(
-            target=self._feed_loop, daemon=True, name=f"mjpeg-feed-{self._name}"
-        )
-        self._feed_thread.start()
 
     def _feed_loop(self) -> None:
+        # Persistent thread for the worker's lifetime; encoder teardown simply
+        # clears ``_stream_output`` until the next encoder is started.
         while not self._feed_stop.is_set():
             output = self._stream_output
             if output is None:
-                time.sleep(0.1)
+                self._feed_stop.wait(0.1)
                 continue
             frame = output.next_frame(timeout=1.0)
             if frame is None:
@@ -780,7 +880,6 @@ class CameraWorker:
                         pass
 
     def _stop_stream_encoder(self) -> None:
-        self._feed_stop.set()
         if self._mjpeg_encoder is not None:
             try:
                 self._picam2.stop_encoder(self._mjpeg_encoder)
@@ -791,11 +890,18 @@ class CameraWorker:
 
     def close(self) -> None:
         self._metadata_stop.set()
+        self._feed_stop.set()
+        raw_path: Path | None = None
         with self._lock:
             if self._started:
-                self._teardown_encoders()
+                raw_path = self._teardown_encoders()
                 self._picam2.stop()
                 self._started = False
+        if self._feed_thread is not None and self._feed_thread.is_alive():
+            self._feed_thread.join(timeout=2.0)
+        if raw_path is not None:
+            path = _finalize_recording(raw_path, self._video_format, wait=True)
+            logger.info("Recording finalized on shutdown: %s", path)
 
 
 class CameraManager:
@@ -911,6 +1017,9 @@ class CameraManager:
                     default_mode=default_mode,
                     encoder_factory=self._encoder_factory,
                     mjpeg_encoder_factory=self._mjpeg_encoder_factory,
+                    fallback_capabilities=_capabilities_for_model(
+                        self._model_for(camera_id), default_mode
+                    ),
                 )
                 self._workers[camera_id] = worker
             return self._workers[camera_id]
@@ -1011,6 +1120,32 @@ def _finalize_video(raw_path: Path, video_format: str) -> Path:
         return raw_path
     raw_path.unlink(missing_ok=True)
     return final_path
+
+
+_FINALIZE_LOCK = threading.Lock()
+
+
+def _finalize_recording(raw_path: Path, video_format: str, *, wait: bool) -> Path | None:
+    """Remux a stopped recording, serialized against other finalizations.
+
+    ``wait=True`` blocks and returns the final path (used by ``stop_recording``
+    and shutdown, which must report it). ``wait=False`` remuxes on a daemon
+    thread so a reconfigure that auto-finalized a recording is never stalled by
+    ffmpeg (the raw file is already safely closed either way).
+    """
+    if video_format != "mp4":
+        return raw_path
+    if wait:
+        with _FINALIZE_LOCK:
+            return _finalize_video(raw_path, video_format)
+
+    def _run() -> None:
+        with _FINALIZE_LOCK:
+            path = _finalize_video(raw_path, video_format)
+            logger.info("Recording finalized: %s", path)
+
+    threading.Thread(target=_run, daemon=True, name="video-finalize").start()
+    return None
 
 
 def _default_encoder_factory(path: Path) -> tuple[Any, Any]:

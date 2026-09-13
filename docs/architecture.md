@@ -87,9 +87,10 @@ flowchart TB
 - **Single process** owns all cameras (libcamera requirement).
 - Each camera gets its own **thread**; blocking capture releases the GIL.
 - FastAPI async routes dispatch capture/control to a per-camera `ThreadPoolExecutor`.
-- **Live view** uses one persistent `lores` MJPEG encoder per camera plus a feed
-  thread that fans frames to per-client `queue.Queue` subscribers — control
-  changes never tear the stream down.
+- **Live view** uses one persistent `lores` MJPEG encoder per camera plus a
+  single feed thread (worker lifetime) that fans frames to per-client
+  `queue.Queue` subscribers — control changes never tear the stream down, and
+  encoder teardown only clears the output (no feed-thread churn).
 - **Single-frame capture mode** tears the MJPEG encoder down (camera at rest) so a
   long exposure can run without a continuous feed; `snapshot` reconfigures the
   camera with the requested exposure and captures one still (runtime
@@ -100,6 +101,12 @@ flowchart TB
   `FrameDurationLimits`.
 - **Controls** (`set_controls`) are applied at runtime; only mode changes
   (`configure_mode`) and flip (`set_flip`) reconfigure (aborting the in-flight frame).
+- **Any reconfigure auto-finalizes an active recording** (`configure_mode` stops
+  the H.264 encoder and the raw path is remuxed to `.mp4` off the camera lock —
+  async for reconfigure, synchronous for `stop_recording`/shutdown).
+- Capabilities are read from `Picamera2.sensor_modes` while the camera is stopped
+  (cached); while it runs, exposure/gain bounds come from `camera_controls` merged
+  onto the static catalog, so clients get real per-sensor bounds at any time.
 - A background **settings poll** thread reads `capture_metadata()` outside the
   camera lock (with a timeout), so a stalled sensor can never freeze the feed
   thread or control operations.

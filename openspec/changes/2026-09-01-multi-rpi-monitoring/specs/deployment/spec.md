@@ -46,3 +46,10 @@ rewritten to the bare form.
 - **THEN** `config.txt` receives the bare `dtoverlay=imx708` line without a
   `camN` suffix, without overlay parameters, and without a bit-depth override,
   and the sensor is reachable on the standard camera connector
+
+#### Scenario: Sensor switch on a previous-gen board
+- **WHEN** the deployment for a csi platform board is reconfigured from an
+  `imx290` camera to an `imx415` camera on the same connector
+- **THEN** the stale bare `dtoverlay=imx290,...` line is removed, the new
+  `dtoverlay=imx415` line is added, and unrelated `dtoverlay` lines remain
+  untouched

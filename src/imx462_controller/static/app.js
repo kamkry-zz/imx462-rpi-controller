@@ -640,9 +640,12 @@ function updateSingleUI() {
 
 async function captureFrame() {
   if (state.selectedId == null || state.capturing) return;
+  const bounds = capsBounds();
   const shutterUs = Number.parseInt(el.shutter.value, 10);
-  const exposureUs = Number.isNaN(shutterUs) || shutterUs <= 0 ? minFrameUs() : shutterUs;
-  const gain = gainForIso(Number.parseInt(el.iso.value, 10)) ?? 1.0;
+  const requestedUs = Number.isNaN(shutterUs) || shutterUs <= 0 ? minFrameUs() : shutterUs;
+  const exposureUs = Math.min(Math.max(requestedUs, bounds.minUs), bounds.maxUs);
+  const requestedGain = gainForIso(Number.parseInt(el.iso.value, 10)) ?? 1.0;
+  const gain = Math.min(Math.max(requestedGain, bounds.gainMin), bounds.gainMax);
   state.capturing = true;
   el.captureBtn.disabled = true;
   el.captureBtn.textContent = "Capturing…";
