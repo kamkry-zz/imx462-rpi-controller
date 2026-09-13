@@ -777,8 +777,9 @@ def test_failed_reconfigure_still_finalizes_recording(tmp_path, monkeypatch):
 
     done = threading.Event()
     monkeypatch.setattr(service, "_finalize_video", lambda raw, fmt: (done.set(), raw)[1])
+    mode = CameraMode(width=1920, height=1080, bit_depth=12, framerate=60)
     with pytest.raises(RuntimeError):
-        worker.configure_mode(CameraMode(width=1920, height=1080, bit_depth=12, framerate=60))
+        worker.configure_mode(mode)
 
     assert done.wait(2.0), "failed reconfigure stranded the recording"
     assert worker.recording is False

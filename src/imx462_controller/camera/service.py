@@ -21,7 +21,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -73,25 +73,30 @@ def _coerce_frame_duration_limits(value: Any) -> tuple[int, int] | None:
     return int(low), int(high)
 
 
+def _is_missing(value: Any) -> bool:
+    """True for values that must never reach libcamera (``None``/NaN)."""
+    return value is None or (isinstance(value, float) and math.isnan(value))
+
+
+def _sanitize_control_value(key: str, value: Any) -> Any:
+    """Return the sanitized value for one control, or ``None`` to drop it."""
+    if key == "FrameDurationLimits":
+        return _coerce_frame_duration_limits(value)
+    if _is_missing(value):
+        return None
+    if isinstance(value, (list, tuple)):
+        filtered = tuple(entry for entry in value if not _is_missing(entry))
+        return filtered or None
+    return value
+
+
 def _sanitize_controls(controls: dict[str, Any]) -> dict[str, Any]:
     """Drop None/NaN values and malformed limits so a bad payload never crashes."""
     clean: dict[str, Any] = {}
     for key, value in controls.items():
-        if value is None:
-            continue
-        if key == "FrameDurationLimits":
-            limits = _coerce_frame_duration_limits(value)
-            if limits is not None:
-                clean[key] = limits
-            continue
-        if isinstance(value, float) and math.isnan(value):
-            continue
-        if isinstance(value, (list, tuple)):
-            filtered = [v for v in value if v is not None and not (isinstance(v, float) and math.isnan(v))]
-            if not filtered:
-                continue
-            value = tuple(filtered)
-        clean[key] = value
+        sanitized = _sanitize_control_value(key, value)
+        if sanitized is not None:
+            clean[key] = sanitized
     return clean
 
 
@@ -160,6 +165,19 @@ class CameraCapabilities:
             "supports_manual_exposure": self.supports_manual_exposure,
             "supports_raw12": self.supports_raw12,
         }
+
+    def copy(self) -> CameraCapabilities:
+        """Return a copy with its own modes list, for per-read adjustments."""
+        return CameraCapabilities(
+            modes=list(self.modes),
+            exposure_min_us=self.exposure_min_us,
+            exposure_max_us=self.exposure_max_us,
+            gain_min=self.gain_min,
+            gain_max=self.gain_max,
+            min_frame_duration_us=self.min_frame_duration_us,
+            supports_manual_exposure=self.supports_manual_exposure,
+            supports_raw12=self.supports_raw12,
+        )
 
 
 @dataclass
@@ -624,9 +642,7 @@ class CameraWorker:
         """Bounds from ``camera_controls`` while the camera is running."""
         if self._fallback_capabilities is None:
             return None
-        caps = replace(
-            self._fallback_capabilities, modes=list(self._fallback_capabilities.modes)
-        )
+        caps = self._fallback_capabilities.copy()
         controls = getattr(self._picam2, "camera_controls", None) or {}
         _apply_control_bounds(caps, controls)
         if self._mode is not None:
