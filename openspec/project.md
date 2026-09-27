@@ -62,6 +62,15 @@ REST API, with MQTT telemetry and OpenTelemetry observability. Deployed with Ans
   time** (`1/framerate`), never a fixed 1/60 s: low-framerate modes (imx415
   ~15 fps, imx708 4K ~14 fps) would otherwise receive an out-of-range
   `FrameDurationLimits`.
+- **Autofocus is IMX708-only** (Camera Module 3 VCM). Detected at runtime from
+  `camera_controls` (`AfMode`/`LensPosition`) with an `imx708` fallback; mode
+  defaults to single (`AfMode=Auto`). `AfTrigger` is a transient command never
+  re-baked by `configure_mode`; an explicit trigger preserves the pre-trigger
+  mode (manual re-locks, continuous resumes, long exposure uses AF-assist), and
+  periodic refocus is a runtime API interval disabled in manual mode. Focus UI
+  controls sync only from explicit responses, never the 2 s status broadcast.
+  Endpoints: `GET /focus`, `POST /focus/trigger`, `PUT /focus`; lens position in
+  dioptres (0 = infinity).
 - **`create_video_configuration` is called with `raw=None`**: picamera2's default
   raw stream crashes the vc4 pipeline (`main`+`lores`+`raw` → SIGABRT).
 - Verify with `rpicam-hello --list-cameras` after reboot.

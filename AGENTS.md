@@ -157,6 +157,29 @@ of truth for planning; `openspec/project.md` holds the full stack/domain context
   background poll thread and surfaced in the WebSocket status payload (skipped
   while recording). The read runs **outside** the camera lock (with a timeout) so
   a stalled sensor can never freeze the feed thread or control operations.
+- **Autofocus is IMX708-only** (Camera Module 3 VCM); the IMX462/IMX290 and the
+  other supported sensors have no actuator and report focus unsupported. Support
+  is detected at runtime from `camera_controls` (`AfMode`/`AfTrigger` →
+  `supports_autofocus`, `LensPosition` → `supports_manual_focus` + dioptre bounds)
+  with an `imx708` static fallback. Focus mode defaults to single (`AfMode=Auto`)
+  on start. `AfMode`/`LensPosition`/`AfRange`/`AfSpeed` are persistent controls
+  re-baked by `configure_mode`, but **`AfTrigger` is a transient command and must
+  never be stored/re-baked** (a reconfigure would otherwise start a spurious focus
+  cycle). Periodic refocus is a runtime-only API interval, driven by the settings
+  poll and skipped for slow frames (a stored frame > 1 s). An explicit
+  `POST /focus/trigger` always works: in a long-exposure/manual state it runs an
+  **AF-assist** (temporarily auto exposure at the mode frame rate, sweep, lock
+  focus at the achieved position, restore exposure); `assist:false` opts out and
+  a capture/recording in progress is rejected (409). An explicit trigger
+  **preserves the pre-trigger mode** (manual re-locks at the achieved position,
+  continuous resumes), and **manual disables periodic refocus** so a lock is
+  never overridden. When a stored frame > 1 s pauses the metadata poll, report
+  `af_state:null` + `focus_stale:true` (never a stale `failed`). The 2 s status
+  broadcast must NOT overwrite focus-mode/range/interval/lens UI controls — they
+  sync only from `GET /focus` and explicit responses (a stale broadcast reverting
+  the dropdown to `auto` made "manual fall back to AF"). Endpoints: `GET /focus`,
+  `POST /focus/trigger` (optional wait), `PUT /focus`; `LensPosition` in dioptres
+  (0 = infinity).
 
 ## Configuration & secrets
 - Non-secret values → `config.yaml`. Secrets → local `.env` (git-ignored).

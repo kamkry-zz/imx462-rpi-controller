@@ -110,6 +110,50 @@
           </label>
         </div>
       </section>
+
+      <section class="card" id="focus-card" hidden>
+        <h2>Focus</h2>
+        <div class="control-grid">
+          <label class="slider">
+            <span>Mode</span>
+            <select id="focus-mode" class="select">
+              <option value="auto" selected>Single (auto)</option>
+              <option value="continuous">Continuous</option>
+              <option value="manual">Manual</option>
+            </select>
+          </label>
+          <label class="slider">
+            <span>Range</span>
+            <select id="focus-range" class="select">
+              <option value="normal" selected>Normal</option>
+              <option value="macro">Macro</option>
+              <option value="full">Full</option>
+            </select>
+          </label>
+          <label class="slider">
+            <span>Lens <output id="focus-lens-out">0.0</output></span>
+            <input type="range" id="focus-lens" min="0" max="15.25" step="0.05" value="0" disabled />
+          </label>
+          <label class="slider">
+            <span>Refocus every</span>
+            <select id="focus-interval" class="select">
+              <option value="0" selected>Off</option>
+              <option value="15">15 s</option>
+              <option value="30">30 s</option>
+              <option value="60">60 s</option>
+              <option value="300">5 min</option>
+            </select>
+          </label>
+          <div class="slider">
+            <span>Autofocus state</span>
+            <span class="badge" id="focus-state">—</span>
+          </div>
+          <div class="actions">
+            <button id="focus-now" class="btn" type="button">Focus now</button>
+          </div>
+        </div>
+        <p class="hint" id="focus-hint" hidden></p>
+      </section>
     </section>
 
     <aside class="sidebar">

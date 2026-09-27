@@ -56,6 +56,22 @@ class SnapshotRequest(BaseModel):
     gain: float = Field(default=1.0, gt=0)
 
 
+class FocusTriggerRequest(BaseModel):
+    wait: bool = False
+    timeout_ms: int = Field(default=2000, gt=0)
+    range: str | None = None
+    speed: str | None = None
+    assist: bool = True  # allow a temporary fast auto-exposure sweep in long-exposure mode
+
+
+class FocusRequest(BaseModel):
+    mode: str = Field(pattern="^(manual|auto|continuous)$")
+    lens_position: float | None = None
+    range: str | None = None
+    speed: str | None = None
+    refocus_interval_seconds: float | None = Field(default=None, ge=0)
+
+
 def _manager(request: Request) -> CameraManager:
     return request.app.state.camera_manager
 
@@ -178,6 +194,65 @@ def set_stream_mode(camera_id: int, body: StreamModeRequest, request: Request):
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return {"ok": True, "camera_id": camera_id, "mode": body.mode}
+
+
+@router.get("/cameras/{camera_id}/focus", responses=_CAMERA_ERROR_RESPONSES)
+def get_focus(camera_id: int, request: Request):
+    manager = _manager(request)
+    try:
+        worker = manager.get_worker(camera_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Camera {camera_id} not found")
+    if not worker.supports_autofocus():
+        raise HTTPException(
+            status_code=409, detail=f"Camera {camera_id} does not support autofocus"
+        )
+    return worker.focus_state()
+
+
+@router.post("/cameras/{camera_id}/focus/trigger", responses=_CAMERA_ERROR_RESPONSES)
+def trigger_focus(camera_id: int, body: FocusTriggerRequest, request: Request):
+    manager = _manager(request)
+    try:
+        state = manager.trigger_autofocus(
+            camera_id, body.range, body.speed, body.wait, body.timeout_ms, body.assist
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Camera {camera_id} not found")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid focus request: {exc}")
+    _mqtt(request).publish_event("focus_triggered", camera_id=camera_id, state=state)
+    return {"ok": True, "camera_id": camera_id, **state}
+
+
+@router.put("/cameras/{camera_id}/focus", responses=_CAMERA_ERROR_RESPONSES)
+def set_focus(camera_id: int, body: FocusRequest, request: Request):
+    manager = _manager(request)
+    try:
+        state = manager.set_focus(
+            camera_id,
+            body.mode,
+            body.lens_position,
+            body.range,
+            body.speed,
+            body.refocus_interval_seconds,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Camera {camera_id} not found")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid focus request: {exc}")
+    _mqtt(request).publish_event(
+        "focus_set",
+        camera_id=camera_id,
+        mode=body.mode,
+        lens_position=body.lens_position,
+        refocus_interval_seconds=body.refocus_interval_seconds,
+    )
+    return {"ok": True, "camera_id": camera_id, **state}
 
 
 @router.post("/cameras/{camera_id}/snapshot", responses=_CAMERA_ERROR_RESPONSES)

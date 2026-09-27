@@ -71,7 +71,8 @@ flowchart TB
 | Component | Responsibility | Key tech |
 |---|---|---|
 | FastAPI app | REST API, static frontend, MJPEG, WebSocket, assets | FastAPI, uvicorn |
-| Camera workers | One per camera; photo/video capture, mode/flip, exposure/ISO/WB, per-sensor capability discovery | Picamera2, thread-per-camera |
+| Camera workers | One per camera; photo/video capture, mode/flip, exposure/ISO/WB, per-sensor capability discovery, autofocus | Picamera2, thread-per-camera |
+| Autofocus | Camera Module 3 (imx708) VCM: capability discovery, single/continuous/manual focus, periodic refocus, focus-state feedback. Lens position is in dioptres (0 = infinity) | libcamera `AfMode`/`AfTrigger`/`LensPosition`/`AfState` |
 | MJPEG fan-out | Persistent `lores` MJPEG encoder + feed thread → per-client queues | MJPEGEncoder, threading |
 | Settings poll | Read current gain/exposure via `capture_metadata()` for the status payload | background thread |
 | Assets | List/download/delete captured media with metadata | `FileResponse`, traversal-safe |
@@ -101,6 +102,31 @@ flowchart TB
   `FrameDurationLimits`.
 - **Controls** (`set_controls`) are applied at runtime; only mode changes
   (`configure_mode`) and flip (`set_flip`) reconfigure (aborting the in-flight frame).
+- **Autofocus** (sensors with a VCM actuator, e.g. the IMX708) is applied at
+  runtime like other controls: `AfMode`/`LensPosition`/`AfRange`/`AfSpeed` persist
+  across reconfigures, but the one-shot `AfTrigger` is a transient command and is
+  never re-baked (so a reconfigure does not start a new focus cycle). Focus
+  defaults to single autofocus on start. Focus state (`AfState`/`LensPosition`)
+  is read by the same off-lock metadata thread.
+- **AF-assist**: autofocus needs a fast frame rate, so an explicit
+  `POST /focus/trigger` on a camera in a long-exposure/manual state temporarily
+  reconfigures to auto exposure at the mode's frame rate, sweeps, locks focus at
+  the achieved lens position (manual mode), and restores the previous exposure.
+  A capture/recording in progress is rejected (409); the assist can be disabled
+  per request. An explicit trigger preserves the pre-trigger mode: manual
+  re-locks at the achieved lens position, continuous resumes tracking. **Periodic**
+  refocus does not assist (that would toggle the exposure every interval), is
+  skipped for slow frames, and is disabled in manual/continuous mode (a manual
+  lock is never overridden).
+- **Focus state freshness**: when a stored frame duration > 1 s pauses the
+  metadata poll, `af_state` is reported as `null` with `focus_stale: true`
+  (UI shows *unknown*) instead of a misleading stale `failed`. AE-driven slow
+  exposures do not pause the poll, so their state stays live.
+- **Focus UI sync**: the 2 s WebSocket status broadcast updates only the
+  read-only focus badge; the mode/range/interval/lens controls sync from the
+  initial `GET /focus` and from explicit PUT/POST responses, so a background
+  broadcast can never revert a user's manual selection. `CameraManager.status()`
+  reads live settings (no cached snapshot).
 - **Any reconfigure auto-finalizes an active recording** (`configure_mode` stops
   the H.264 encoder and the raw path is remuxed to `.mp4` off the camera lock —
   async for reconfigure, synchronous for `stop_recording`/shutdown).
@@ -118,7 +144,11 @@ flowchart TB
 - **Single-frame capture**: browser → REST `stream-mode=single` + `snapshot` → camera
   worker (single native still) → media dir → viewport `<img>` + assets gallery.
 - **Status push**: app → WebSocket → browser (live stats, per-camera state, client
-  IP list, current ISO/shutter).
+  IP list, current ISO/shutter, focus mode/state/lens position).
+- **Focus**: browser/external client → REST `/api/cameras/{id}/focus` (mode,
+  manual lens position, refocus interval) and `/focus/trigger` (single autofocus,
+  optional wait) → camera worker → libcamera AF controls; state returned inline and
+  pushed over the WebSocket. Non-actuator sensors report focus unsupported (409).
 - **Assets**: browser → REST → media dir (list/download/delete; video is remuxed
   `.h264` → `.mp4` on stop).
 - **Telemetry**: app → MQTT broker (events/status/metrics) and app → OTLP
