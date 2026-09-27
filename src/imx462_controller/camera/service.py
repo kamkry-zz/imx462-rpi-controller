@@ -949,6 +949,22 @@ class CameraWorker:
         state["assisted"] = False
         return state
 
+    def _set_refocus_interval(self, seconds: float | None, manual: bool) -> None:
+        """Store the periodic-refocus interval; always disabled in manual mode."""
+        if seconds is None:
+            if manual:
+                self._refocus_interval = 0.0
+                self._refocus_due = 0.0
+            return
+        interval = float(seconds)
+        if interval < 0:
+            raise ValueError("refocus_interval_seconds must be >= 0")
+        if manual:
+            # A manual lock must never be overridden by scheduled AF.
+            interval = 0.0
+        self._refocus_interval = interval
+        self._refocus_due = time.monotonic() + interval if interval > 0 else 0.0
+
     def set_focus(
         self,
         mode: str,
@@ -973,18 +989,7 @@ class CameraWorker:
                 self._focus_speed = self._validate_focus(speed, AF_SPEED_VALUES, "speed")
             if lens_position is not None:
                 self._lens_position = self._clamp_lens_position(lens_position)
-            if refocus_interval_seconds is not None:
-                interval = float(refocus_interval_seconds)
-                if interval < 0:
-                    raise ValueError("refocus_interval_seconds must be >= 0")
-                if key == "manual":
-                    # A manual lock must never be overridden by scheduled AF.
-                    interval = 0.0
-                self._refocus_interval = interval
-                self._refocus_due = time.monotonic() + interval if interval > 0 else 0.0
-            elif key == "manual":
-                self._refocus_interval = 0.0
-                self._refocus_due = 0.0
+            self._set_refocus_interval(refocus_interval_seconds, key == "manual")
             self._ensure_started()
             self._picam2.set_controls(self._persistent_focus_controls())
             if key == "auto":

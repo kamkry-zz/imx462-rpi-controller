@@ -459,7 +459,7 @@ function renderStatus(msg) {
 }
 
 function focusSupported() {
-  return !!(state.caps && state.caps.supports_autofocus);
+  return !!state.caps?.supports_autofocus;
 }
 
 function updateFocusUI() {
@@ -496,27 +496,34 @@ function updateFocusUI() {
   }
 }
 
+function renderFocusBadge(focus) {
+  const stale = !!focus.focus_stale;
+  if (!stale && focus.af_state == null) {
+    el.focusState.textContent = "—";
+    delete el.focusState.dataset.state;
+    return;
+  }
+  const text = stale ? "unknown" : focus.af_state;
+  el.focusState.textContent = text;
+  el.focusState.dataset.state = text;
+}
+
+function syncFocusControls(focus) {
+  if (focus.focus_mode) el.focusMode.value = focus.focus_mode;
+  if (focus.range) el.focusRange.value = focus.range;
+  if (focus.refocus_interval_seconds != null) {
+    el.focusInterval.value = String(focus.refocus_interval_seconds);
+  }
+  updateFocusUI();
+}
+
 // syncControls=true only for deliberate reads (initial load, explicit PUT/POST
 // responses). Periodic broadcasts pass false so they never clobber the user's
 // in-progress mode/range/interval/lens selection.
 function renderFocusState(focus, syncControls = false) {
   if (!focus) return;
-  const stale = !!focus.focus_stale;
-  if (stale || focus.af_state != null) {
-    el.focusState.textContent = stale ? "unknown" : focus.af_state;
-    el.focusState.dataset.state = stale ? "unknown" : focus.af_state;
-  } else {
-    el.focusState.textContent = "—";
-    delete el.focusState.dataset.state;
-  }
-  if (syncControls) {
-    if (focus.focus_mode) el.focusMode.value = focus.focus_mode;
-    if (focus.range) el.focusRange.value = focus.range;
-    if (focus.refocus_interval_seconds != null) {
-      el.focusInterval.value = String(focus.refocus_interval_seconds);
-    }
-    updateFocusUI();
-  }
+  renderFocusBadge(focus);
+  if (syncControls) syncFocusControls(focus);
   if (focus.lens_position != null && !focusTouched) {
     el.focusLens.value = String(focus.lens_position);
     el.focusLensOut.textContent = Number(focus.lens_position).toFixed(2);
@@ -530,6 +537,7 @@ async function loadFocusState(id) {
     if (state.selectedId === id) renderFocusState(focus, true);
   } catch (err) {
     // Focus unsupported or transient; leave the defaults in place.
+    console.debug("Focus state unavailable:", err);
   }
 }
 
