@@ -490,6 +490,32 @@ table.assets .name {
   letter-spacing: 0.04em;
 }
 
+#focus-state {
+  align-self: flex-start;
+}
+
+#focus-state[data-state="focused"] {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+#focus-state[data-state="failed"] {
+  color: var(--color-destructive);
+  border-color: var(--color-destructive);
+}
+
+#focus-state[data-state="unknown"] {
+  color: var(--color-muted-foreground);
+  border-style: dashed;
+}
+
+#focus-hint {
+  margin: 10px 0 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--color-muted-foreground);
+}
+
 .row-actions {
   display: flex;
   gap: 6px;

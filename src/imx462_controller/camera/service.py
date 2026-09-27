@@ -37,6 +37,31 @@ tracer = get_tracer("imx462_controller.camera")
 MIN_FRAME_US = 16_666  # 1/60 s
 IMX290_MAX_EXPOSURE_US = 115_686_258  # sensor max (~115.7 s), used as a fallback bound
 
+# libcamera autofocus control values (enum ordinals), passed as integers so the
+# service stays importable without libcamera — mirrors the transform fallback.
+AF_MODE_MANUAL = 0
+AF_MODE_AUTO = 1
+AF_MODE_CONTINUOUS = 2
+AF_TRIGGER_START = 0
+AF_TRIGGER_CANCEL = 1
+AF_MODE_VALUES = {
+    "manual": AF_MODE_MANUAL,
+    "auto": AF_MODE_AUTO,
+    "continuous": AF_MODE_CONTINUOUS,
+}
+AF_RANGE_VALUES = {"normal": 0, "macro": 1, "full": 2}
+AF_SPEED_VALUES = {"normal": 0, "fast": 1}
+# libcamera AfState metadata ordinals -> stable API strings.
+AF_STATE_NAMES = {0: "idle", 1: "scanning", 2: "focused", 3: "failed"}
+AF_STATE_FOCUSED = 2
+AF_STATE_FAILED = 3
+
+# Frame durations above this (µs) are too slow for a practical autofocus sweep:
+# an explicit trigger runs an "AF-assist" (temporarily switching to a fast,
+# auto-exposure configuration) instead, and periodic refocus is skipped. 0.2 s
+# ≈ 5 fps; an AF sweep of several coarse steps needs frames to converge.
+AF_ASSIST_THRESHOLD_US = 200_000
+
 
 def _min_frame_us(mode: CameraMode | None) -> int:
     """Minimum frame duration (us) for a mode, derived from its framerate.
@@ -153,6 +178,14 @@ class CameraCapabilities:
     min_frame_duration_us: int = MIN_FRAME_US
     supports_manual_exposure: bool = True
     supports_raw12: bool = True
+    # Autofocus (actuator) support. False for sensors with no VCM (e.g. imx290);
+    # True for the Camera Module 3 (imx708). ``lens_position`` bounds are in
+    # dioptres (0 = infinity) and only meaningful when manual focus is supported.
+    supports_autofocus: bool = False
+    supports_manual_focus: bool = False
+    lens_position_min: float | None = None
+    lens_position_max: float | None = None
+    lens_position_default: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -164,6 +197,11 @@ class CameraCapabilities:
             "min_frame_duration_us": self.min_frame_duration_us,
             "supports_manual_exposure": self.supports_manual_exposure,
             "supports_raw12": self.supports_raw12,
+            "supports_autofocus": self.supports_autofocus,
+            "supports_manual_focus": self.supports_manual_focus,
+            "lens_position_min": self.lens_position_min,
+            "lens_position_max": self.lens_position_max,
+            "lens_position_default": self.lens_position_default,
         }
 
     def copy(self) -> CameraCapabilities:
@@ -177,6 +215,11 @@ class CameraCapabilities:
             min_frame_duration_us=self.min_frame_duration_us,
             supports_manual_exposure=self.supports_manual_exposure,
             supports_raw12=self.supports_raw12,
+            supports_autofocus=self.supports_autofocus,
+            supports_manual_focus=self.supports_manual_focus,
+            lens_position_min=self.lens_position_min,
+            lens_position_max=self.lens_position_max,
+            lens_position_default=self.lens_position_default,
         )
 
 
@@ -291,6 +334,14 @@ _MODEL_BOUNDS: dict[str, tuple[int, int, float, float]] = {
     "imx415": (MIN_FRAME_US, 30_000_000, 1.0, 31.6),
 }
 
+# (supports_autofocus, supports_manual_focus, lens_min, lens_max, lens_default)
+# fallback focus capabilities keyed by sensor model. Only the Camera Module 3
+# (imx708) carries a VCM actuator; every other supported sensor has none. On
+# real hardware the runtime ``camera_controls`` read overrides these.
+_MODEL_FOCUS: dict[str, tuple[bool, bool, float, float, float]] = {
+    "imx708": (True, True, 0.0, 32.0, 1.0),
+}
+
 
 def _bit_depth_from_format(fmt: Any) -> int | None:
     """Extract 10/12 from a libcamera format string like ``SRGGB12_CSI2P``."""
@@ -364,7 +415,7 @@ def _min_frame_for(default_mode: CameraMode | None, modes: list[CameraMode]) -> 
 
 
 def _apply_control_bounds(caps: CameraCapabilities, controls: dict[str, Any]) -> None:
-    """Overwrite exposure/gain bounds in ``caps`` from libcamera control info."""
+    """Overwrite exposure/gain/focus bounds in ``caps`` from libcamera control info."""
     exposure = controls.get("ExposureTime")
     if isinstance(exposure, (tuple, list)) and len(exposure) >= 2:
         caps.exposure_min_us = int(exposure[0])
@@ -374,6 +425,18 @@ def _apply_control_bounds(caps: CameraCapabilities, controls: dict[str, Any]) ->
         caps.gain_min = float(gain[0])
         caps.gain_max = float(gain[1])
     caps.supports_manual_exposure = "ExposureTime" in controls and "AnalogueGain" in controls
+    # Focus support is only ever *added* here (never cleared), so the static
+    # per-model fallback survives a runtime read whose control map is sparse.
+    if "AfMode" in controls or "AfTrigger" in controls:
+        caps.supports_autofocus = True
+    lens = controls.get("LensPosition")
+    if lens is not None:
+        caps.supports_manual_focus = True
+        if isinstance(lens, (tuple, list)) and len(lens) >= 2:
+            caps.lens_position_min = float(lens[0])
+            caps.lens_position_max = float(lens[1])
+            if len(lens) >= 3:
+                caps.lens_position_default = float(lens[2])
 
 
 def read_capabilities(picam2: Any, default_mode: CameraMode | None = None) -> CameraCapabilities:
@@ -408,6 +471,17 @@ def _capabilities_for_model(model: str, default_mode: CameraMode | None = None) 
         31.6,
     )
     modes = _modes_for_model(model, default_mode)
+    focus = next(
+        (value for key, value in _MODEL_FOCUS.items() if model and key in model.lower()),
+        None,
+    )
+    has_af, has_manual, lens_min, lens_max, lens_default = focus or (
+        False,
+        False,
+        None,
+        None,
+        None,
+    )
     return CameraCapabilities(
         modes=modes,
         exposure_min_us=exposure_min,
@@ -417,6 +491,11 @@ def _capabilities_for_model(model: str, default_mode: CameraMode | None = None) 
         min_frame_duration_us=_min_frame_for(default_mode, modes),
         supports_manual_exposure=True,
         supports_raw12="imx290" in model.lower(),
+        supports_autofocus=has_af,
+        supports_manual_focus=has_manual,
+        lens_position_min=lens_min,
+        lens_position_max=lens_max,
+        lens_position_default=lens_default,
     )
 
 
@@ -471,6 +550,14 @@ class CameraWorker:
         self._stream_mode = "continuous"
         self._capturing = False
         self._capabilities: CameraCapabilities | None = None
+        # Focus state. ``_focus_mode`` is None until configure decides (auto for
+        # actuator cameras, None for the rest). ``AfTrigger`` is never stored.
+        self._focus_mode: str | None = None
+        self._lens_position: float | None = None
+        self._focus_range: str | None = None
+        self._focus_speed: str | None = None
+        self._refocus_interval: float = 0.0
+        self._refocus_due: float = 0.0
         self._metadata: dict[str, Any] = {}
         self._metadata_lock = threading.Lock()
         self._metadata_stop = threading.Event()
@@ -555,6 +642,11 @@ class CameraWorker:
                 # be rejected at start.
                 floor = _min_frame_us(mode)
                 controls["FrameDurationLimits"] = tuple(max(value, floor) for value in limits)
+            if self.supports_autofocus():
+                if self._focus_mode is None:
+                    # Actuator cameras default to single autofocus on start.
+                    self._focus_mode = "auto"
+                controls.update(self._persistent_focus_controls())
             sensor: dict[str, Any] = {"output_size": (mode.width, mode.height)}
             if mode.bit_depth is not None:
                 sensor["bit_depth"] = mode.bit_depth
@@ -620,6 +712,332 @@ class CameraWorker:
                 self._picam2.set_controls(normalized)
             logger.info("Camera %s controls set: %s", self._name, normalized)
 
+    def supports_autofocus(self) -> bool:
+        """True when the sensor exposes autofocus controls (static fallback or live)."""
+        caps = self._capabilities or self._fallback_capabilities
+        if caps is not None and caps.supports_autofocus:
+            return True
+        controls = getattr(self._picam2, "camera_controls", None) or {}
+        return "AfMode" in controls or "AfTrigger" in controls
+
+    def supports_manual_focus(self) -> bool:
+        """True when the sensor exposes a manual lens-position control."""
+        caps = self._capabilities or self._fallback_capabilities
+        if caps is not None and caps.supports_manual_focus:
+            return True
+        controls = getattr(self._picam2, "camera_controls", None) or {}
+        return "LensPosition" in controls
+
+    def _lens_bounds(self) -> tuple[float, float, float]:
+        """(min, max, default) lens position, preferring the live control range."""
+        caps = self._capabilities or self._fallback_capabilities
+        lo = caps.lens_position_min if caps and caps.lens_position_min is not None else 0.0
+        hi = caps.lens_position_max if caps and caps.lens_position_max is not None else 32.0
+        default = (
+            caps.lens_position_default
+            if caps and caps.lens_position_default is not None
+            else lo
+        )
+        lens = (getattr(self._picam2, "camera_controls", None) or {}).get("LensPosition")
+        if isinstance(lens, (tuple, list)) and len(lens) >= 2:
+            lo, hi = float(lens[0]), float(lens[1])
+            if len(lens) >= 3:
+                default = float(lens[2])
+        return float(lo), float(hi), float(default)
+
+    def _clamp_lens_position(self, value: float) -> float:
+        lo, hi, _ = self._lens_bounds()
+        return max(lo, min(float(value), hi))
+
+    @staticmethod
+    def _validate_focus(value: Any, allowed: dict[str, int], name: str) -> str:
+        key = str(value).lower()
+        if key not in allowed:
+            raise ValueError(f"Unsupported focus {name}: {value}")
+        return key
+
+    def _persistent_focus_controls(self) -> dict[str, Any]:
+        """Focus controls re-applied on reconfigure. Never includes ``AfTrigger``."""
+        if self._focus_mode is None:
+            return {}
+        controls: dict[str, Any] = {"AfMode": AF_MODE_VALUES[self._focus_mode]}
+        if self._focus_range:
+            controls["AfRange"] = AF_RANGE_VALUES[self._focus_range]
+        if self._focus_speed:
+            controls["AfSpeed"] = AF_SPEED_VALUES[self._focus_speed]
+        if self._focus_mode == "manual":
+            if self._lens_position is None:
+                _, _, self._lens_position = self._lens_bounds()
+            controls["LensPosition"] = self._lens_position
+        return controls
+
+    def _frame_us(self) -> int:
+        """Best-known current frame duration (µs).
+
+        Prefers the stored manual ``FrameDurationLimits`` (which drives
+        ``configure_mode``), then the live exposure read by the metadata thread
+        (AE can stretch the frame in a light-starved scene), then the mode floor.
+        """
+        limits = self._controls.get("FrameDurationLimits")
+        if limits:
+            return int(limits[0])
+        exposure = self._metadata.get("exposure_time")
+        if isinstance(exposure, (int, float)) and exposure > 0:
+            return int(exposure)
+        return _min_frame_us(self._mode)
+
+    def _af_busy(self) -> bool:
+        """True while a capture or recording is in flight (explicit AF is rejected)."""
+        return self._capturing or self._recording
+
+    def _af_slow_frame(self) -> bool:
+        """True when the frame duration is too slow for a practical AF sweep."""
+        return self._frame_us() > AF_ASSIST_THRESHOLD_US
+
+    def _focus_state_stale(self) -> bool:
+        """True when the metadata poll is paused, so AfState would be stale.
+
+        Mirrors the poll's own pause condition (a *stored* frame duration above
+        1 s). AE-driven slow frames do not pause the poll, so the state stays
+        live there even when the exposure is long.
+        """
+        limits = self._controls.get("FrameDurationLimits")
+        return bool(limits) and int(limits[0]) > 1_000_000
+
+    def _af_blocked(self) -> bool:
+        """True when a scheduled refocus must be skipped (busy or slow frames)."""
+        return self._af_busy() or self._af_slow_frame()
+
+    def _issue_af_trigger(self) -> None:
+        """Start a single autofocus cycle.
+
+        Cancel then Start guarantees a fresh cycle even if the trigger is already
+        armed: some IPAs treat a repeated ``Start`` as a no-op.
+        """
+        self._picam2.set_controls({"AfTrigger": AF_TRIGGER_CANCEL})
+        self._picam2.set_controls({"AfTrigger": AF_TRIGGER_START})
+
+    def _clear_af_state(self) -> None:
+        """Drop the last AfState so a wait observes only the new sweep's result."""
+        with self._metadata_lock:
+            self._metadata.pop("af_state", None)
+
+    def _wait_for_focus(self, timeout_ms: int) -> None:
+        """Block until a fresh focus result appears or the timeout elapses."""
+        deadline = time.monotonic() + max(int(timeout_ms), 0) / 1000.0
+        while time.monotonic() < deadline:
+            if self._metadata.get("af_state") in ("focused", "failed"):
+                return
+            time.sleep(0.05)
+
+    def _trigger_with_assist(self, timeout_ms: int) -> dict[str, Any]:
+        """Focus via a temporary fast, auto-exposure configuration.
+
+        Long-exposure/manual cameras cannot sweep focus at ~0.5 fps. The previous
+        exposure controls are saved, the camera is reconfigured to auto exposure
+        at the mode's frame rate for the sweep, focus is locked at the achieved
+        lens position, and the original exposure is restored. Runs under the
+        camera lock (an explicit, bounded, user-initiated action).
+        """
+        saved_controls = dict(self._controls)
+        saved_focus_mode = self._focus_mode
+        saved_lens = self._lens_position
+        settled: str | None = None
+        achieved: float | None = None
+        self._controls.pop("ExposureTime", None)
+        self._controls.pop("AnalogueGain", None)
+        self._controls.pop("FrameDurationLimits", None)
+        self._controls["AeEnable"] = True
+        self._focus_mode = "auto"
+        try:
+            if self._mode is not None:
+                self.configure_mode(self._mode)
+            self._clear_af_state()
+            self._issue_af_trigger()
+            self._wait_for_focus(max(int(timeout_ms), 5000))
+            # Capture the fresh result before restoring the slow exposure (which
+            # would make focus_state() report it as stale).
+            settled = self._metadata.get("af_state")
+            achieved = self._metadata.get("lens_position")
+        finally:
+            if achieved is not None:
+                # Lock focus at the achieved position so it holds for the long exposure.
+                self._focus_mode = "manual"
+                self._lens_position = self._clamp_lens_position(achieved)
+            else:
+                self._focus_mode = saved_focus_mode
+                self._lens_position = saved_lens
+            self._controls = saved_controls
+            if self._mode is not None:
+                self.configure_mode(self._mode)
+        state = self.focus_state()
+        # This response reflects a just-completed measurement, not stale data.
+        state["af_state"] = settled
+        state["focus_stale"] = False
+        state["assisted"] = True
+        return state
+
+    def _apply_focus_mode(self, mode: str) -> None:
+        """Re-apply a focus mode at runtime; manual locks the achieved lens."""
+        with self._lock:
+            self._focus_mode = mode
+            if mode == "manual":
+                achieved = self._metadata.get("lens_position")
+                if achieved is not None:
+                    self._lens_position = self._clamp_lens_position(achieved)
+            self._picam2.set_controls(self._persistent_focus_controls())
+
+    def trigger_autofocus(
+        self,
+        range: str | None = None,
+        speed: str | None = None,
+        wait: bool = False,
+        timeout_ms: int = 2000,
+        assist: bool = True,
+    ) -> dict[str, Any]:
+        """Run a single autofocus cycle on demand, optionally waiting for it.
+
+        An explicit trigger always succeeds: if the camera is in a
+        long-exposure/manual state too slow for a focus sweep it runs an
+        AF-assist (see ``_trigger_with_assist``) unless ``assist`` is disabled.
+        A capture or recording in progress is rejected instead.
+
+        The pre-trigger focus mode is preserved: a one-shot from ``manual``
+        re-locks focus at the achieved position, and a nudge from ``continuous``
+        resumes continuous tracking rather than silently downgrading to single.
+        """
+        with self._lock, tracer.start_as_current_span("camera.trigger_autofocus"):
+            if not self.supports_autofocus():
+                raise RuntimeError(f"Camera {self._name} does not support autofocus")
+            if self._af_busy():
+                raise RuntimeError(
+                    f"Camera {self._name} is capturing or recording; stop it before focusing"
+                )
+            self._ensure_started()
+            if range is not None:
+                self._focus_range = self._validate_focus(range, AF_RANGE_VALUES, "range")
+            if speed is not None:
+                self._focus_speed = self._validate_focus(speed, AF_SPEED_VALUES, "speed")
+            previous_mode = self._focus_mode
+            if self._af_slow_frame():
+                if not assist:
+                    raise RuntimeError(
+                        "Camera is in long-exposure mode; autofocus needs assist or Auto Exposure"
+                    )
+                return self._trigger_with_assist(timeout_ms)
+            self._focus_mode = "auto"
+            self._picam2.set_controls(self._persistent_focus_controls())
+            self._clear_af_state()
+            self._issue_af_trigger()
+        # Wait off-lock so the MJPEG feed thread is never stalled by focus polling.
+        # A manual lock must wait to know where the sweep landed.
+        if wait or previous_mode == "manual":
+            self._wait_for_focus(timeout_ms)
+        if previous_mode == "manual":
+            # Focus now from a manual lock: sweep, then lock again at the result.
+            settled = self._metadata.get("af_state")
+            self._apply_focus_mode("manual")
+            state = self.focus_state()
+            state["af_state"] = settled
+            state["focus_stale"] = False
+        elif previous_mode == "continuous":
+            # A one-shot nudge should not silently drop continuous tracking.
+            self._apply_focus_mode("continuous")
+            state = self.focus_state()
+        else:
+            state = self.focus_state()
+        state["assisted"] = False
+        return state
+
+    def _set_refocus_interval(self, seconds: float | None, manual: bool) -> None:
+        """Store the periodic-refocus interval; always disabled in manual mode."""
+        if seconds is None:
+            if manual:
+                self._refocus_interval = 0.0
+                self._refocus_due = 0.0
+            return
+        interval = float(seconds)
+        if interval < 0:
+            raise ValueError("refocus_interval_seconds must be >= 0")
+        if manual:
+            # A manual lock must never be overridden by scheduled AF.
+            interval = 0.0
+        self._refocus_interval = interval
+        self._refocus_due = time.monotonic() + interval if interval > 0 else 0.0
+
+    def set_focus(
+        self,
+        mode: str,
+        lens_position: float | None = None,
+        range: str | None = None,
+        speed: str | None = None,
+        refocus_interval_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Set focus mode, manual lens position, and/or the periodic refocus interval."""
+        with self._lock, tracer.start_as_current_span("camera.set_focus"):
+            if not self.supports_autofocus():
+                raise RuntimeError(f"Camera {self._name} does not support autofocus")
+            key = str(mode).lower()
+            if key not in AF_MODE_VALUES:
+                raise ValueError(f"Unsupported focus mode: {mode}")
+            if key == "manual" and not self.supports_manual_focus():
+                raise RuntimeError(f"Camera {self._name} does not support manual focus")
+            self._focus_mode = key
+            if range is not None:
+                self._focus_range = self._validate_focus(range, AF_RANGE_VALUES, "range")
+            if speed is not None:
+                self._focus_speed = self._validate_focus(speed, AF_SPEED_VALUES, "speed")
+            if lens_position is not None:
+                self._lens_position = self._clamp_lens_position(lens_position)
+            self._set_refocus_interval(refocus_interval_seconds, key == "manual")
+            self._ensure_started()
+            self._picam2.set_controls(self._persistent_focus_controls())
+            if key == "auto":
+                self._issue_af_trigger()
+            logger.info(
+                "Camera %s focus set: mode=%s lens=%s interval=%ss",
+                self._name,
+                self._focus_mode,
+                self._lens_position,
+                self._refocus_interval,
+            )
+            return self.focus_state()
+
+    def focus_state(self) -> dict[str, Any]:
+        """Snapshot the current focus mode, state, lens position, and interval."""
+        # The stored position is authoritative only in manual mode; otherwise the
+        # live metadata is where the autofocus algorithm actually left the lens.
+        lens = (
+            self._lens_position
+            if self._focus_mode == "manual" and self._lens_position is not None
+            else self._metadata.get("lens_position")
+        )
+        # When the poll is paused by a slow stored frame, report unknown rather
+        # than a misleading previous AfState.
+        stale = self._focus_state_stale()
+        return {
+            "focus_mode": self._focus_mode,
+            "af_state": None if stale else self._metadata.get("af_state"),
+            "focus_stale": stale,
+            "lens_position": lens,
+            "refocus_interval_seconds": self._refocus_interval,
+            "range": self._focus_range,
+            "speed": self._focus_speed,
+        }
+
+    def refocus_due(self, now: float) -> bool:
+        """True when a scheduled periodic refocus should fire now."""
+        if self._refocus_interval <= 0 or not self.supports_autofocus():
+            return False
+        if self._focus_mode in (None, "continuous", "manual"):
+            # Continuous AF already tracks the scene, and a manual lock must not
+            # be overridden; nothing to schedule.
+            return False
+        if now < self._refocus_due:
+            return False
+        self._refocus_due = now + self._refocus_interval
+        return not self._af_blocked()
+
     def capabilities(self) -> CameraCapabilities | None:
         """Read authoritative capabilities, serialized with camera ops.
 
@@ -666,6 +1084,18 @@ class CameraWorker:
                 settings["exposure_time"] = int(controls["ExposureTime"])
             if controls.get("AnalogueGain") is not None:
                 settings["analogue_gain"] = float(controls["AnalogueGain"])
+        if self._focus_mode is not None:
+            settings["focus_mode"] = self._focus_mode
+            # Only in manual mode is the stored lens position authoritative; in
+            # auto/continuous the live metadata reflects where the lens actually is.
+            if self._focus_mode == "manual" and self._lens_position is not None:
+                settings["lens_position"] = self._lens_position
+            # When the poll is paused by a slow stored frame, surface the focus
+            # state as unknown instead of a stale previous AfState.
+            stale = self._focus_state_stale()
+            settings["focus_stale"] = stale
+            if stale:
+                settings["af_state"] = None
         return settings
 
     def _metadata_loop(self) -> None:
@@ -691,10 +1121,17 @@ class CameraWorker:
                 except Exception as exc:  # noqa: BLE001 - transient during reconfig/stall
                     logger.debug("Metadata read failed: %s", exc)
                     continue
-                self._metadata = {
+                settings: dict[str, Any] = {
                     "analogue_gain": float(md.get("AnalogueGain", 0.0)),
                     "exposure_time": int(md.get("ExposureTime", 0)),
                 }
+                if "AfState" in md:
+                    settings["af_state"] = AF_STATE_NAMES.get(
+                        int(md["AfState"]), str(md["AfState"])
+                    )
+                if "LensPosition" in md:
+                    settings["lens_position"] = float(md["LensPosition"])
+                self._metadata = settings
 
     def _teardown_encoders(self) -> Path | None:
         """Stop all encoders; return the raw recording path for finalization."""
@@ -922,7 +1359,6 @@ class CameraManager:
         self._workers_lock = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=max(1, len(config.cameras)))
         self._started_at = time.time()
-        self._settings: dict[int, dict[str, Any]] = {}
         self._settings_stop = threading.Event()
         self._settings_thread = threading.Thread(
             target=self._settings_loop, daemon=True, name="camera-settings"
@@ -930,10 +1366,15 @@ class CameraManager:
         self._settings_thread.start()
 
     def _settings_loop(self) -> None:
-        """Periodically read current gain/exposure for the status payload."""
+        """Periodically fire due periodic refocus (status is read live elsewhere)."""
         while not self._settings_stop.wait(2.0):
+            now = time.monotonic()
             for cam_id, worker in list(self._workers.items()):
-                self._settings[cam_id] = worker.current_settings()
+                try:
+                    if worker.refocus_due(now):
+                        self._executor.submit(worker.trigger_autofocus)
+                except Exception as exc:  # noqa: BLE001 - never kill the loop
+                    logger.debug("Periodic refocus failed for %s: %s", cam_id, exc)
 
     def _default_mode_for(self, cam: Any) -> CameraMode:
         """Return the per-camera default mode, falling back to the global one."""
@@ -1036,6 +1477,39 @@ class CameraManager:
         worker = self.get_worker(camera_id)
         self._executor.submit(worker.set_flip, hflip, vflip).result()
 
+    def trigger_autofocus(
+        self,
+        camera_id: int,
+        range: str | None = None,
+        speed: str | None = None,
+        wait: bool = False,
+        timeout_ms: int = 2000,
+        assist: bool = True,
+    ) -> dict[str, Any]:
+        worker = self.get_worker(camera_id)
+        return self._executor.submit(
+            worker.trigger_autofocus, range, speed, wait, timeout_ms, assist
+        ).result()
+
+    def set_focus(
+        self,
+        camera_id: int,
+        mode: str,
+        lens_position: float | None = None,
+        range: str | None = None,
+        speed: str | None = None,
+        refocus_interval_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        worker = self.get_worker(camera_id)
+        return self._executor.submit(
+            worker.set_focus,
+            mode,
+            lens_position,
+            range,
+            speed,
+            refocus_interval_seconds,
+        ).result()
+
     def output_dir(self, camera_id: int) -> Path:
         return self.get_worker(camera_id).output_dir
 
@@ -1074,7 +1548,12 @@ class CameraManager:
                 }
                 for cam in self._config.cameras
             ],
-            "settings": {str(k): v for k, v in self._settings.items()},
+            # Read live (not cached) so focus/exposure changes are reflected in
+            # the next WebSocket/MQTT status broadcast without a lag window.
+            "settings": {
+                str(cam_id): worker.current_settings()
+                for cam_id, worker in self._workers.items()
+            },
         }
 
     def close(self) -> None:

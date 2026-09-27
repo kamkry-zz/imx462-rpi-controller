@@ -60,9 +60,20 @@ const el = {
   brightness: document.getElementById("brightness"),
   contrast: document.getElementById("contrast"),
   saturation: document.getElementById("saturation"),
+  focusCard: document.getElementById("focus-card"),
+  focusMode: document.getElementById("focus-mode"),
+  focusRange: document.getElementById("focus-range"),
+  focusLens: document.getElementById("focus-lens"),
+  focusLensOut: document.getElementById("focus-lens-out"),
+  focusInterval: document.getElementById("focus-interval"),
+  focusState: document.getElementById("focus-state"),
+  focusNow: document.getElementById("focus-now"),
+  focusHint: document.getElementById("focus-hint"),
   assetsBody: document.getElementById("assets-body"),
   assetsEmpty: document.getElementById("assets-empty"),
 };
+
+let focusTouched = false;
 
 const SHUTTER_LISTS = {
   off: [
@@ -308,9 +319,12 @@ function selectCamera(id) {
   selectDefaultMode();
   populateShutter();
   populateIso();
+  focusTouched = false;
+  updateFocusUI();
   setStreamSrc(`/api/cameras/${id}/stream?t=${Date.now()}`);
   applyMode();
   refreshCapabilities(id);
+  loadFocusState(id);
 }
 
 async function refreshCapabilities(id) {
@@ -329,6 +343,7 @@ async function refreshCapabilities(id) {
       // profile list. Only the exposure/gain bounds refresh here.
       populateShutter();
       populateIso();
+      updateFocusUI();
     }
   } catch (err) {
     // Fall back to the static per-model capabilities already applied.
@@ -437,7 +452,138 @@ function renderStatus(msg) {
   el.statClients.textContent = msg.clients?.length ? msg.clients.join(", ") : "—";
 
   const settings = msg.settings?.[String(state.selectedId)];
-  if (settings) renderLiveSettings(settings);
+  if (settings) {
+    renderLiveSettings(settings);
+    renderFocusState(settings);
+  }
+}
+
+function focusSupported() {
+  return !!state.caps?.supports_autofocus;
+}
+
+function updateFocusUI() {
+  const supported = focusSupported();
+  el.focusCard.hidden = !supported;
+  if (!supported) return;
+  const caps = state.caps || {};
+  const min = caps.lens_position_min != null ? caps.lens_position_min : 0;
+  const max = caps.lens_position_max != null ? caps.lens_position_max : 32.0;
+  const def = caps.lens_position_default != null ? caps.lens_position_default : min;
+  el.focusLens.min = String(min);
+  el.focusLens.max = String(max);
+  el.focusLens.step = String((max - min) / 200 || 0.05);
+  // Only reset to the default when the current value is out of range/empty, so
+  // a server-provided lens position is never clobbered.
+  const cur = Number.parseFloat(el.focusLens.value);
+  if (!Number.isFinite(cur) || cur < min || cur > max) {
+    el.focusLens.value = String(def);
+  }
+  el.focusLensOut.textContent = Number(el.focusLens.value).toFixed(2);
+  const manual = el.focusMode.value === "manual";
+  el.focusLens.disabled = !manual;
+  // A manual lock is never overridden by scheduled AF.
+  el.focusInterval.disabled = manual;
+  if (manual) el.focusInterval.value = "0";
+
+  // Autofocus needs a fast frame; warn when a long manual shutter is selected.
+  const shutterUs = Number.parseInt(el.shutter.value, 10);
+  const slow = !el.aeToggle.checked && !Number.isNaN(shutterUs) && shutterUs > 200000;
+  el.focusHint.hidden = !slow;
+  if (slow) {
+    el.focusHint.textContent =
+      "Long exposure: Focus now briefly switches to auto exposure and locks focus; periodic refocus is paused.";
+  }
+}
+
+function renderFocusBadge(focus) {
+  const stale = !!focus.focus_stale;
+  if (!stale && focus.af_state == null) {
+    el.focusState.textContent = "—";
+    delete el.focusState.dataset.state;
+    return;
+  }
+  const text = stale ? "unknown" : focus.af_state;
+  el.focusState.textContent = text;
+  el.focusState.dataset.state = text;
+}
+
+function syncFocusControls(focus) {
+  if (focus.focus_mode) el.focusMode.value = focus.focus_mode;
+  if (focus.range) el.focusRange.value = focus.range;
+  if (focus.refocus_interval_seconds != null) {
+    el.focusInterval.value = String(focus.refocus_interval_seconds);
+  }
+  updateFocusUI();
+}
+
+// syncControls=true only for deliberate reads (initial load, explicit PUT/POST
+// responses). Periodic broadcasts pass false so they never clobber the user's
+// in-progress mode/range/interval/lens selection.
+function renderFocusState(focus, syncControls = false) {
+  if (!focus) return;
+  renderFocusBadge(focus);
+  if (syncControls) syncFocusControls(focus);
+  if (focus.lens_position != null && !focusTouched) {
+    el.focusLens.value = String(focus.lens_position);
+    el.focusLensOut.textContent = Number(focus.lens_position).toFixed(2);
+  }
+}
+
+async function loadFocusState(id) {
+  if (!focusSupported()) return;
+  try {
+    const focus = await api(`/api/cameras/${id}/focus`);
+    if (state.selectedId === id) renderFocusState(focus, true);
+  } catch (err) {
+    // Focus unsupported or transient; leave the defaults in place.
+    console.debug("Focus state unavailable:", err);
+  }
+}
+
+async function applyFocus() {
+  if (state.selectedId == null || !focusSupported()) return;
+  const body = {
+    mode: el.focusMode.value,
+    range: el.focusRange.value,
+    lens_position: Number.parseFloat(el.focusLens.value),
+    refocus_interval_seconds: Number.parseInt(el.focusInterval.value, 10) || 0,
+  };
+  try {
+    const res = await api(`/api/cameras/${state.selectedId}/focus`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    });
+    renderFocusState(res, true);
+  } catch (err) {
+    toast(`Focus error: ${err.message}`, true);
+  }
+  updateFocusUI();
+}
+
+async function triggerFocus() {
+  if (state.selectedId == null || !focusSupported()) return;
+  el.focusNow.disabled = true;
+  el.focusNow.textContent = "Focusing…";
+  try {
+    const res = await api(`/api/cameras/${state.selectedId}/focus/trigger`, {
+      method: "POST",
+      body: JSON.stringify({
+        wait: true,
+        timeout_ms: 10000,
+        range: el.focusRange.value,
+        assist: true,
+      }),
+    });
+    renderFocusState(res, true);
+    const result = res.af_state || (res.focus_stale ? "unknown" : "done");
+    toast(`Autofocus: ${result}${res.assisted ? " (assist)" : ""}`);
+  } catch (err) {
+    toast(`Focus failed: ${err.message}`, true);
+  } finally {
+    el.focusNow.disabled = false;
+    el.focusNow.textContent = "Focus now";
+  }
 }
 
 function formatShutterUs(us) {
@@ -584,6 +730,7 @@ async function applyControls() {
   } catch (err) {
     toast(`Controls error: ${err.message}`, true);
   }
+  updateFocusUI();
   syncSingleMode();
 }
 
@@ -693,6 +840,19 @@ el.awbToggle.addEventListener("change", () => {
   updateAwbState();
   applyControls();
 });
+el.focusMode.addEventListener("change", () => {
+  updateFocusUI();
+  applyFocus();
+});
+el.focusRange.addEventListener("change", applyFocus);
+el.focusInterval.addEventListener("change", applyFocus);
+el.focusLens.addEventListener("input", () => {
+  focusTouched = true;
+  el.focusLensOut.textContent = Number(el.focusLens.value).toFixed(2);
+});
+el.focusLens.addEventListener("change", applyFocus);
+el.focusNow.addEventListener("click", triggerFocus);
+
 el.hflipToggle.addEventListener("change", applyFlip);
 el.vflipToggle.addEventListener("change", applyFlip);
 el.flicker.addEventListener("change", () => {

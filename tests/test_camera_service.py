@@ -6,6 +6,10 @@ import time
 import pytest
 
 from imx462_controller.camera.service import (
+    AF_MODE_AUTO,
+    AF_MODE_CONTINUOUS,
+    AF_MODE_MANUAL,
+    AF_TRIGGER_START,
     MJPEG_BITRATE,
     CameraCapabilities,
     CameraManager,
@@ -29,6 +33,7 @@ class FakePicamera2:
         self.captured = []
         self.encoders = []
         self.encoder_stopped = []
+        self.control_calls = []
         self.frames = [b"\xff\xd8fakejpeg"]
         self.metadata = {"AnalogueGain": 2.0, "ExposureTime": 33333, "SensorTimestamp": 0}
         self.camera_controls = {
@@ -84,12 +89,47 @@ class FakePicamera2:
 
     def set_controls(self, controls):
         self.controls = controls
+        self.control_calls.append(controls)
 
     def start_encoder(self, encoder, output, name=None):
         self.encoders.append((encoder, output, name))
 
     def stop_encoder(self, encoder=None):
         self.encoder_stopped.append(encoder)
+
+
+class AutofocusPicamera2(FakePicamera2):
+    """Fake with the Camera Module 3 (imx708) autofocus controls + metadata."""
+
+    def __init__(self, camera_num=None):
+        super().__init__(camera_num)
+        self.camera_controls = {
+            "ExposureTime": (16666, 115686258, 33333),
+            "AnalogueGain": (1.0, 31.6, 1.0),
+            "AfMode": (0, 2, 1),
+            "AfTrigger": (0, 1, 0),
+            "AfRange": (0, 2, 0),
+            "AfSpeed": (0, 1, 0),
+            "LensPosition": (0.0, 15.25, 0.0),
+        }
+        self.metadata = {
+            "AnalogueGain": 2.0,
+            "ExposureTime": 33333,
+            "AfState": 2,
+            "LensPosition": 3.0,
+        }
+
+
+def _focus_worker(fake, capture_config, model="imx708"):
+    default = CameraMode(width=1920, height=1080, framerate=60)
+    return CameraWorker(
+        0,
+        "cam0",
+        fake,
+        capture_config,
+        default_mode=default,
+        fallback_capabilities=_capabilities_for_model(model, default),
+    )
 
 
 @pytest.fixture
@@ -819,3 +859,259 @@ def test_runtime_capabilities_uses_running_mode_floor(capture_config):
     caps = worker.capabilities()
     assert caps is not None
     assert caps.min_frame_duration_us == 16667  # running mode, not the 15 fps default
+
+
+def test_read_capabilities_detects_autofocus():
+    caps = read_capabilities(AutofocusPicamera2())
+    assert caps.supports_autofocus is True
+    assert caps.supports_manual_focus is True
+    assert caps.lens_position_min == 0.0
+    assert caps.lens_position_max == 15.25
+    assert caps.lens_position_default == 0.0
+
+
+def test_read_capabilities_without_focus_controls():
+    caps = read_capabilities(FakePicamera2())
+    assert caps.supports_autofocus is False
+    assert caps.supports_manual_focus is False
+
+
+def test_static_catalog_focus_support():
+    imx708 = _capabilities_for_model("imx708")
+    assert imx708.supports_autofocus is True
+    assert imx708.supports_manual_focus is True
+    assert imx708.lens_position_max == 32.0
+    imx290 = _capabilities_for_model("imx290")
+    assert imx290.supports_autofocus is False
+    assert imx290.supports_manual_focus is False
+
+
+def test_trigger_autofocus_without_reconfigure(capture_config):
+    fake = AutofocusPicamera2()
+    worker = _focus_worker(fake, capture_config)
+    worker.configure_mode(CameraMode(width=1920, height=1080, framerate=60))
+    fake.config = None
+    fake.control_calls = []
+
+    state = worker.trigger_autofocus()
+
+    assert fake.config is None, "trigger must not reconfigure the camera"
+    assert {"AfMode": AF_MODE_AUTO} in fake.control_calls
+    assert {"AfTrigger": AF_TRIGGER_START} in fake.control_calls
+    assert state["focus_mode"] == "auto"
+
+
+def test_trigger_autofocus_unsupported_raises(capture_config):
+    fake = FakePicamera2()
+    worker = _focus_worker(fake, capture_config, model="imx290")
+    worker.configure_mode(CameraMode(width=1920, height=1080, framerate=60))
+    with pytest.raises(RuntimeError):
+        worker.trigger_autofocus()
+
+
+def test_reconfigure_reapplies_focus_without_trigger(capture_config):
+    fake = AutofocusPicamera2()
+    default = CameraMode(width=1920, height=1080, framerate=60)
+    worker = _focus_worker(fake, capture_config)
+    worker.configure_mode(default)
+    worker.set_focus("manual", lens_position=5.0)
+
+    fake.control_calls = []
+    worker.configure_mode(default)
+
+    controls = fake.config["controls"]
+    assert controls["AfMode"] == AF_MODE_MANUAL
+    assert controls["LensPosition"] == 5.0
+    assert "AfTrigger" not in controls
+    assert all("AfTrigger" not in call for call in fake.control_calls)
+
+
+def test_manual_focus_clamps_and_survives_mode_change(capture_config):
+    fake = AutofocusPicamera2()
+    worker = _focus_worker(fake, capture_config)
+    worker.configure_mode(CameraMode(width=1920, height=1080, framerate=60))
+
+    worker.set_focus("manual", lens_position=99.0)
+    assert worker.focus_state()["lens_position"] == 15.25
+
+    worker.configure_mode(CameraMode(width=1280, height=720, framerate=60))
+    assert fake.config["controls"]["LensPosition"] == 15.25
+    assert fake.config["controls"]["AfMode"] == AF_MODE_MANUAL
+
+
+def test_focus_state_reports_metadata(capture_config):
+    fake = AutofocusPicamera2()
+    worker = _focus_worker(fake, capture_config)
+    worker.configure_mode(CameraMode(width=1920, height=1080, framerate=60))
+    settings = {}
+    for _ in range(50):
+        settings = worker.current_settings()
+        if settings.get("af_state"):
+            break
+        time.sleep(0.05)
+    assert settings["focus_mode"] == "auto"
+    assert settings["af_state"] == "focused"
+
+
+def test_stored_lens_not_reported_in_non_manual_mode(capture_config):
+    fake = AutofocusPicamera2()
+    fake.metadata = {
+        "AnalogueGain": 2.0,
+        "ExposureTime": 33333,
+        "AfState": 1,
+        "LensPosition": 4.0,
+    }
+    worker = _focus_worker(fake, capture_config)
+    worker.configure_mode(CameraMode(width=1920, height=1080, framerate=60))
+    worker.set_focus("manual", lens_position=9.0)
+    worker._metadata = {"lens_position": 4.0, "af_state": "scanning"}
+
+    assert worker.focus_state()["lens_position"] == 9.0  # manual authoritative
+    worker.set_focus("continuous")
+    # In continuous mode the live metadata (not the stale manual 9.0) is reported.
+    assert worker.focus_state()["lens_position"] == 4.0
+
+
+def test_trigger_autofocus_assist_in_long_exposure(capture_config):
+    fake = AutofocusPicamera2()
+    worker = _focus_worker(fake, capture_config)
+    worker.configure_mode(CameraMode(width=1920, height=1080, framerate=60))
+    worker.set_controls(
+        {
+            "AeEnable": False,
+            "ExposureTime": 2_000_000,
+            "AnalogueGain": 1.0,
+            "FrameDurationLimits": [2_000_000, 2_000_000],
+        }
+    )
+
+    state = worker.trigger_autofocus(wait=False, timeout_ms=1000)
+
+    assert state["assisted"] is True
+    assert state["af_state"] == "focused"  # fresh result from the assist sweep
+    assert state["focus_stale"] is False
+    assert state["focus_mode"] == "manual"  # focus locked at the achieved position
+    assert state["lens_position"] == 3.0  # from the fake's metadata
+    # Original long-exposure controls restored.
+    controls = fake.config["controls"]
+    assert controls["AeEnable"] is False
+    assert controls["ExposureTime"] == 2_000_000
+    assert controls["FrameDurationLimits"] == (2_000_000, 2_000_000)
+    assert controls["AfMode"] == AF_MODE_MANUAL
+    assert controls["LensPosition"] == 3.0
+
+
+def test_trigger_autofocus_manual_locks_and_preserves_mode(capture_config):
+    fake = AutofocusPicamera2()
+    worker = _focus_worker(fake, capture_config)
+    worker.configure_mode(CameraMode(width=1920, height=1080, framerate=60))
+    worker.set_focus("manual", lens_position=8.0)
+    fake.controls = None
+
+    state = worker.trigger_autofocus(timeout_ms=1000)
+
+    assert state["assisted"] is False
+    assert state["focus_mode"] == "manual"  # mode preserved, not flipped to auto
+    assert state["af_state"] == "focused"
+    assert state["lens_position"] == 3.0  # locked at the achieved position
+    assert fake.controls == {"AfMode": AF_MODE_MANUAL, "LensPosition": 3.0}
+
+
+def test_trigger_autofocus_continuous_preserves_mode(capture_config):
+    fake = AutofocusPicamera2()
+    worker = _focus_worker(fake, capture_config)
+    worker.configure_mode(CameraMode(width=1920, height=1080, framerate=60))
+    worker.set_focus("continuous")
+    fake.controls = None
+
+    state = worker.trigger_autofocus(timeout_ms=1000)
+
+    assert state["focus_mode"] == "continuous"
+    assert fake.controls == {"AfMode": AF_MODE_CONTINUOUS}
+
+
+def test_set_focus_manual_disables_periodic_refocus(capture_config):
+    fake = AutofocusPicamera2()
+    worker = _focus_worker(fake, capture_config)
+    worker.configure_mode(CameraMode(width=1920, height=1080, framerate=60))
+    worker.set_focus("auto", refocus_interval_seconds=10)
+
+    worker.set_focus("manual", lens_position=1.0)
+
+    assert worker.focus_state()["refocus_interval_seconds"] == 0
+    assert worker.refocus_due(time.monotonic() + 1000) is False
+
+
+def test_trigger_autofocus_assist_disabled_raises(capture_config):
+    fake = AutofocusPicamera2()
+    worker = _focus_worker(fake, capture_config)
+    worker.configure_mode(CameraMode(width=1920, height=1080, framerate=60))
+    worker.set_controls(
+        {"AeEnable": False, "ExposureTime": 2_000_000, "FrameDurationLimits": [2_000_000, 2_000_000]}
+    )
+    with pytest.raises(RuntimeError):
+        worker.trigger_autofocus(assist=False)
+
+
+def test_trigger_autofocus_busy_raises(capture_config):
+    fake = AutofocusPicamera2()
+    worker = _focus_worker(fake, capture_config)
+    worker.configure_mode(CameraMode(width=1920, height=1080, framerate=60))
+    worker._capturing = True
+    with pytest.raises(RuntimeError):
+        worker.trigger_autofocus()
+
+
+def test_focus_state_stale_on_long_exposure(capture_config):
+    fake = AutofocusPicamera2()
+    worker = _focus_worker(fake, capture_config)
+    worker.configure_mode(CameraMode(width=1920, height=1080, framerate=60))
+    worker.set_controls(
+        {"AeEnable": False, "ExposureTime": 2_000_000, "FrameDurationLimits": [2_000_000, 2_000_000]}
+    )
+    worker._metadata = {"exposure_time": 2_000_000, "af_state": "failed", "lens_position": 1.0}
+
+    state = worker.focus_state()
+    assert state["focus_stale"] is True
+    assert state["af_state"] is None  # never report a stale value as the live state
+
+    settings = worker.current_settings()
+    assert settings["focus_stale"] is True
+    assert settings["af_state"] is None
+
+
+def test_periodic_refocus_skips_slow_frames(capture_config):
+    fake = AutofocusPicamera2()
+    worker = _focus_worker(fake, capture_config)
+    worker.configure_mode(CameraMode(width=1920, height=1080, framerate=60))
+    worker.set_focus("auto", refocus_interval_seconds=10)
+    worker.set_controls(
+        {"AeEnable": False, "ExposureTime": 2_000_000, "FrameDurationLimits": [2_000_000, 2_000_000]}
+    )
+    assert worker.refocus_due(time.monotonic() + 100) is False
+
+
+def test_periodic_refocus_scheduling(capture_config):
+    fake = AutofocusPicamera2()
+    worker = _focus_worker(fake, capture_config)
+    worker.configure_mode(CameraMode(width=1920, height=1080, framerate=60))
+    worker.set_focus("auto", refocus_interval_seconds=10)
+
+    now = time.monotonic()
+    assert worker.refocus_due(now) is False  # not due yet
+    assert worker.refocus_due(now + 100) is True
+    assert worker.refocus_due(now + 100) is False  # rescheduled after firing
+
+    worker._capturing = True
+    assert worker.refocus_due(now + 1000) is False, "refocus must be skipped while capturing"
+    worker._capturing = False
+
+
+def test_periodic_refocus_disabled_by_default_and_for_continuous(capture_config):
+    fake = AutofocusPicamera2()
+    worker = _focus_worker(fake, capture_config)
+    worker.configure_mode(CameraMode(width=1920, height=1080, framerate=60))
+    assert worker.refocus_due(time.monotonic() + 10_000) is False
+
+    worker.set_focus("continuous", refocus_interval_seconds=10)
+    assert worker.refocus_due(time.monotonic() + 10_000) is False
