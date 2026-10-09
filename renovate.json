@@ -1,6 +1,11 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
+  "timezone": "Europe/Warsaw",
+  "schedule": ["* 4 * * 1,4,6"],
+  "prHourlyLimit": 0,
+  "prConcurrentLimit": 0,
+  "rebaseWhen": "conflicted",
   "assignees": ["kamkry-zz"],
   "dependencyDashboard": true,
   "configMigration": true,
