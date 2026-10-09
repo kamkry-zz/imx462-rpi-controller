@@ -6,21 +6,23 @@
   "prHourlyLimit": 0,
   "prConcurrentLimit": 0,
   "rebaseWhen": "conflicted",
+  "separateMajorMinor": false,
   "assignees": ["kamkry-zz"],
   "dependencyDashboard": true,
   "configMigration": true,
   "labels": ["dependencies"],
   "packageRules": [
     {
-      "matchManagers": ["pep621"],
-      "matchPackageNames": ["opentelemetry-distro", "opentelemetry-instrumentation-fastapi"],
-      "groupName": "opentelemetry"
-    },
-    {
       "matchManagers": ["github-actions"],
       "matchDatasources": ["github-releases"],
       "matchPackageNames": ["python"],
       "enabled": false
+    },
+    {
+      "description": "One PR for all dependency updates, majors combined with minors",
+      "matchPackageNames": ["*"],
+      "groupName": "dependencies",
+      "groupSlug": "all"
     }
   ]
 }
