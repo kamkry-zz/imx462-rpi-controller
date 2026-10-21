@@ -10,6 +10,20 @@
     state: present
     update_cache: true
 
+- name: Upgrade rpicam-apps to match the installed libcamera
+  # Trixie images can ship rpicam-apps 1.13.0 against libcamera 0.7.2; the
+  # ABI mismatch breaks `rpicam-hello` with an undefined-symbol error. 1.14.0
+  # is built against the current libcamera. This only touches the CLI tools;
+  # the controller uses Picamera2 directly.
+  apt:
+    name:
+      - librpicam-app1
+      - rpicam-apps-core
+      - rpicam-apps-lite
+    state: latest
+    update_cache: true
+  tags: [rpicam]
+
 - name: Ensure node_exporter is enabled and running
   systemd:
     name: prometheus-node-exporter
