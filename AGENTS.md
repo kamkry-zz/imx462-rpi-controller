@@ -97,7 +97,8 @@ of truth for planning; `openspec/project.md` holds the full stack/domain context
   H.264 recording; `lores` (downscaled) for always-on MJPEG via the hardware
   `MJPEGEncoder`. This keeps live view and recording/photo independent. Video
   records raw H.264 then **remuxes to `.mp4`** via `ffmpeg`
-  (`/usr/bin/ffmpeg`, `-c copy`); falls back to `.h264` if ffmpeg is absent.
+  (`/usr/bin/ffmpeg`, `-c copy`); falls back to `.h264` if ffmpeg is absent. The
+  app role installs the `ffmpeg` package (Lite images such as the Zero 2 W lack it).
 - **`create_video_configuration` must be called with `raw=None`.** picamera2
   defaults to adding a `raw` stream, and a `main`+`lores`+`raw` config aborts
   the vc4 pipeline (`stl_vector.h operator[]` assertion, SIGABRT, on
