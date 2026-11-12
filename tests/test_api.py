@@ -454,7 +454,8 @@ def test_camera_open_failure_is_503_without_traceback(tmp_path, caplog, monkeypa
     assert not any(r.exc_info for r in caplog.records)
     assert "Traceback" not in caplog.text
     errors = [r for r in caplog.records if r.levelname == "ERROR"]
-    assert len(errors) == 1 and "failed to open" in errors[0].getMessage()
+    assert len(errors) == 1
+    assert "failed to open" in errors[0].getMessage()
 
 
 def test_camera_open_retries_after_backoff(tmp_path, monkeypatch, caplog):
