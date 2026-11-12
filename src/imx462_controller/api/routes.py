@@ -23,6 +23,7 @@ _PHOTO_KINDS = {"jpg", "jpeg", "png"}
 _CAMERA_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     404: {"description": "Camera not found"},
     409: {"description": "Operation rejected (camera busy or invalid state)"},
+    503: {"description": "Camera unavailable (failed to open; retried after a backoff)"},
 }
 
 _ASSET_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {

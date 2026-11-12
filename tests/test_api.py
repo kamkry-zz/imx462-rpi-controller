@@ -417,3 +417,68 @@ def test_focus_trigger_in_manual_preserves_mode(focus_client):
     )
     assert res.status_code == 200
     assert res.json()["focus_mode"] == "manual"  # focus now must not drop the manual lock
+
+
+def _broken_client(tmp_path, factory):
+    config = AppConfig(
+        cameras=[CameraConfig(id=0, name="cam0")],
+        capture=CaptureConfig(output_dir=str(tmp_path / "media"), video_format="h264"),
+    )
+    app = create_app(
+        config,
+        Secrets(),
+        picam2_factory=factory,
+        encoder_factory=lambda path: (object(), str(path)),
+    )
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def test_camera_open_failure_is_503_without_traceback(tmp_path, caplog, monkeypatch):
+    """A broken camera stack (e.g. a corrupted numpy on a failing SD card) must
+    answer 503 and log one line, not a traceback per request."""
+    calls = []
+
+    def broken_factory(camera_id):
+        calls.append(camera_id)
+        raise UnicodeDecodeError("utf-8", b"\xee", 0, 1, "invalid continuation byte")
+
+    with _broken_client(tmp_path, broken_factory) as c, caplog.at_level("DEBUG"):
+        for _ in range(5):
+            res = c.post("/api/cameras/0/photo")
+            assert res.status_code == 503
+            assert "unavailable" in res.json()["detail"]
+        assert c.put("/api/cameras/0/flip", json={"hflip": True, "vflip": False}).status_code == 503
+
+    # Opened once, then failed fast during the backoff.
+    assert calls == [0]
+    assert not any(r.exc_info for r in caplog.records)
+    assert "Traceback" not in caplog.text
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert "failed to open" in errors[0].getMessage()
+
+
+def test_camera_open_retries_after_backoff(tmp_path, monkeypatch, caplog):
+    from imx462_controller.camera import service
+
+    clock = [1000.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: clock[0])
+    attempts = []
+
+    def flaky_factory(camera_id):
+        attempts.append(camera_id)
+        if len(attempts) < 3:
+            raise RuntimeError("no cameras available")
+        return FakePicamera2(camera_id)
+
+    with _broken_client(tmp_path, flaky_factory) as c, caplog.at_level("DEBUG"):
+        assert c.post("/api/cameras/0/photo").status_code == 503
+        assert c.post("/api/cameras/0/photo").status_code == 503  # within backoff
+        assert len(attempts) == 1
+        clock[0] += service.CAMERA_RETRY_BACKOFF_S + 1
+        assert c.post("/api/cameras/0/photo").status_code == 503  # same error, retried
+        clock[0] += service.CAMERA_RETRY_BACKOFF_S + 1
+        assert c.post("/api/cameras/0/photo").status_code == 200  # recovered
+    assert len(attempts) == 3
+    # The repeated identical failure is demoted to DEBUG: one ERROR in total.
+    assert len([r for r in caplog.records if r.levelname == "ERROR"]) == 1

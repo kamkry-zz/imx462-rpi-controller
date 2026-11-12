@@ -131,6 +131,30 @@
     dest: /etc/systemd/system/imx462-controller.service
     mode: "0644"
 
+- name: Check for firmware cmdline.txt
+  stat:
+    path: /boot/firmware/cmdline.txt
+  register: imx462_cmdline_stat
+  when: imx462_enable_memory_cgroup | bool
+
+- name: Enable the memory cgroup controller (kernel cmdline)
+  # The Raspberry Pi firmware injects `cgroup_disable=memory`; without the
+  # controller the unit's MemoryHigh/MemoryMax are silently ignored.
+  # cmdline.txt is a single line: append the flag once, idempotently.
+  replace:
+    path: "{{ '/boot/firmware/cmdline.txt' if imx462_cmdline_stat.stat.exists else '/boot/cmdline.txt' }}"
+    regexp: '^(?!.*\bcgroup_enable=memory\b)(.*\S)\s*$'
+    replace: '\1 cgroup_enable=memory'
+  register: imx462_cmdline_result
+  when: imx462_enable_memory_cgroup | bool
+
+- name: Warn that the memory cgroup needs a reboot
+  debug:
+    msg: >-
+      cgroup_enable=memory was added to the kernel command line; reboot this Pi
+      for the service memory limits to take effect.
+  when: imx462_cmdline_result is changed
+
 - name: Enable and start service
   systemd:
     name: imx462-controller

@@ -31,6 +31,22 @@ from ..otel import get_tracer
 logger = logging.getLogger(__name__)
 tracer = get_tracer("imx462_controller.camera")
 
+# After a camera fails to open, further requests fail fast for this long
+# instead of re-importing picamera2 / re-opening libcamera on every call.
+CAMERA_RETRY_BACKOFF_S = 30.0
+
+
+class CameraUnavailableError(Exception):
+    """The camera could not be opened (stack import failure, absent sensor, ...).
+
+    Deliberately *not* a ``RuntimeError``: routes map ``RuntimeError`` to 409
+    (busy/conflict), whereas this is a 503 handled once at the app level and
+    logged as a single line. A broken install (e.g. a corrupted numpy on a
+    failing SD card) would otherwise log a full traceback per request, and on
+    a flash-backed journal that write amplification wears the card out.
+    """
+
+
 # The IMX290/IMX462 exposes single-frame exposures up to ~115 s natively (24-bit
 # VMAX plus adjustable HMAX), so no software stacking is required for the 1-30 s
 # ladder offered by the UI.
@@ -1357,6 +1373,8 @@ class CameraManager:
         self._mjpeg_encoder_factory = mjpeg_encoder_factory
         self._workers: dict[int, CameraWorker] = {}
         self._workers_lock = threading.Lock()
+        # camera_id -> (monotonic time of the failure, error summary)
+        self._open_failures: dict[int, tuple[float, str]] = {}
         self._executor = ThreadPoolExecutor(max_workers=max(1, len(config.cameras)))
         self._started_at = time.time()
         self._settings_stop = threading.Event()
@@ -1448,7 +1466,7 @@ class CameraManager:
             raise KeyError(f"Camera {camera_id} is not configured")
         with self._workers_lock:
             if camera_id not in self._workers:
-                picam2 = self._picam2_factory(camera_id)
+                picam2 = self._open_camera(camera_id, cam.name)
                 default_mode = self._default_mode_for(cam)
                 worker = CameraWorker(
                     camera_id,
@@ -1464,6 +1482,35 @@ class CameraManager:
                 )
                 self._workers[camera_id] = worker
             return self._workers[camera_id]
+
+    def _open_camera(self, camera_id: int, name: str) -> Any:
+        """Open the camera, failing fast (no traceback) while it is broken.
+
+        Called under ``_workers_lock``. The first failure is logged once as a
+        single line; repeats of the same error within/after the backoff are
+        demoted to DEBUG so a permanently broken camera cannot flood the log.
+        """
+        now = time.monotonic()
+        failure = self._open_failures.get(camera_id)
+        if failure is not None and now - failure[0] < CAMERA_RETRY_BACKOFF_S:
+            raise CameraUnavailableError(f"Camera {name} unavailable: {failure[1]}")
+        try:
+            picam2 = self._picam2_factory(camera_id)
+        except Exception as exc:  # noqa: BLE001 - any open failure is "unavailable"
+            summary = f"{type(exc).__name__}: {exc}"
+            repeated = failure is not None and failure[1] == summary
+            logger.log(
+                logging.DEBUG if repeated else logging.ERROR,
+                "Camera %s failed to open (retry in %.0f s): %s",
+                name,
+                CAMERA_RETRY_BACKOFF_S,
+                summary,
+            )
+            self._open_failures[camera_id] = (now, summary)
+            raise CameraUnavailableError(f"Camera {name} unavailable: {summary}") from None
+        if self._open_failures.pop(camera_id, None) is not None:
+            logger.info("Camera %s opened after earlier failures", name)
+        return picam2
 
     def configure(self, camera_id: int, mode: CameraMode) -> None:
         worker = self.get_worker(camera_id)

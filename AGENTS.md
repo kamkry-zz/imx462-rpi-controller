@@ -56,6 +56,34 @@ of truth for planning; `openspec/project.md` holds the full stack/domain context
   venv created with `--system-site-packages` so the apt-installed `picamera2` is
   importable. Newer images may not have a `pi` user — the default login user is
   `user` (uid 1000); use it as the systemd service user.
+- **Trixie camera stack leaks native memory** (picamera2 0.3.37/0.3.38 +
+  libcamera 0.7.2, Python 3.13): under ~1,200 photos/h the controller grows
+  without bound (Pi 5: 3.1 GB RSS+swap after 9.5 days; a Zero 2 W thrashed and
+  hung after ~3.5 days). Bookworm hosts (picamera2 0.3.31, libcamera 0.5) under
+  the same load stay flat, and the app's Python layer (FastAPI/OTel/logging) is
+  flat in a no-hardware repro. A standalone single-threaded picamera2 loop on a
+  Trixie Pi 5 (500× `capture_file`, 500× `capture_metadata`, 100× flip
+  reconfigure, MJPEG encoder running) is also flat, so the growth needs the
+  app's multi-threaded use of the stack (suspect: glibc malloc arena
+  fragmentation — next experiment `MALLOC_ARENA_MAX=2` on one host). Mitigated
+  by the service memory guard below; do not remove it.
+- **Service memory guard**: the unit sets `MemoryHigh`/`MemoryMax`/
+  `MemorySwapMax` (role defaults 40%/50%/25% of RAM) so a leak OOM-kills and
+  restarts the service instead of thrashing the board. The Pi firmware passes
+  `cgroup_disable=memory`, which silently no-ops these limits — the app role
+  appends `cgroup_enable=memory` to `cmdline.txt` (reboot required; verify with
+  `cat /sys/fs/cgroup/cgroup.controllers` listing `memory`).
+- **CMA on ≤512 MB boards** (Zero 2 W): `vc4-kms-v3d` reserves 256 MB of
+  contiguous memory by default (60% of usable RAM). The camera holds ~77 MB of
+  DMA buffers (IMX290 1080p), so the camera-overlay role sets `cma-192`
+  (`imx462_cma_mb`, reboot required); larger boards are left untouched.
+- **Pi OS keeps the journal in RAM** (`40-rpi-volatile-storage.conf`) to spare
+  SD cards, so logs of a crashed boot are lost. Keep log volume low: a camera
+  that fails to open is a `CameraUnavailableError` → **503 + one log line**,
+  retried after a 30 s backoff (`CAMERA_RETRY_BACKOFF_S`), never a traceback
+  per request. A failing SD card can silently return bit-flipped reads
+  (`dpkg --verify` mismatches, e.g. a corrupted numpy → `UnicodeDecodeError` on
+  import); reflash on a new card rather than repairing.
 
 ## Architecture constraints
 - Camera access is via **Picamera2** in a **single process**, one instance per camera
