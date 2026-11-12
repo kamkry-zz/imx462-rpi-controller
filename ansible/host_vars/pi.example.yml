@@ -5,6 +5,16 @@ imx462_venv: "{{ imx462_app_dir }}/venv"
 imx462_media_dir: /var/lib/imx462-controller/media
 imx462_service_user: user
 
+# Optional overrides (role defaults shown; see roles/*/defaults/main.yml).
+# Service memory guard, % of physical RAM ("infinity" disables a limit):
+# imx462_memory_high: "40%"
+# imx462_memory_max: "50%"
+# imx462_memory_swap_max: "25%"
+# imx462_enable_memory_cgroup: true   # appends cgroup_enable=memory (reboot)
+# vc4-kms-v3d CMA in MB; default 192 on <=512 MB boards (Zero 2 W), else 0
+# (= leave untouched). Reboot to apply.
+# imx462_cma_mb: 192
+
 # Non-secret config (rendered to config.yaml on the target).
 imx462_config:
   server:

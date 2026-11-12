@@ -14,6 +14,13 @@ RestartSec=5
 # timeout is 120 s); the systemd default of 90 s could SIGKILL mid-remux.
 TimeoutStopSec=180
 EnvironmentFile={{ imx462_app_dir }}/.env
+# Memory guard: an OOM kill inside this cgroup restarts the service
+# (Restart=on-failure) instead of letting a leak thrash the whole board.
+# Requires the memory cgroup controller (cgroup_enable=memory, see role).
+MemoryAccounting=yes
+MemoryHigh={{ imx462_memory_high }}
+MemoryMax={{ imx462_memory_max }}
+MemorySwapMax={{ imx462_memory_swap_max }}
 
 [Install]
 WantedBy=multi-user.target

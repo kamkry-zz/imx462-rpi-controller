@@ -1,0 +1,15 @@
+---
+# Memory guard for the controller service (systemd cgroup limits).
+# The app has a slow native-memory leak under sustained photo/flip load; without
+# a cap it fills swap and the board thrashes until it hangs (a Pi Zero 2 W died
+# this way after ~3.5 days). With the cap, the cgroup OOM-kills the service and
+# systemd restarts it (Restart=on-failure) instead.
+# Percentages are of physical RAM. Set to "infinity" to disable a limit.
+imx462_memory_high: "40%"      # reclaim/throttle above this
+imx462_memory_max: "50%"       # hard cap -> OOM kill -> restart
+imx462_memory_swap_max: "25%"  # keep the service from filling global swap
+
+# The Raspberry Pi firmware passes `cgroup_disable=memory` on the kernel command
+# line, which silently turns the limits above into no-ops. When true, the role
+# appends `cgroup_enable=memory` to cmdline.txt (takes effect after a reboot).
+imx462_enable_memory_cgroup: true

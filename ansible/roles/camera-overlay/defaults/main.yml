@@ -1,0 +1,9 @@
+---
+# Contiguous memory (CMA) reserved by the vc4-kms-v3d overlay, in MB.
+# The overlay default is 256 MB, which is 60% of a Pi Zero 2 W's 512 MB (416 MB
+# usable). Measured: the camera holds ~77 MB of DMA buffers (IMX290 1080p on a
+# Zero 2 W), so 192 MB keeps ~115 MB headroom for larger modes (IMX708
+# 2304x1296) and recording while returning 64 MB to the system.
+# Valid overlay values: 64, 96, 128, 192, 256, 320, 384, 448, 512.
+# 0 leaves the vc4-kms-v3d line untouched (default for boards with > 512 MB).
+imx462_cma_mb: "{{ 192 if (ansible_facts.memtotal_mb | int) <= 512 else 0 }}"

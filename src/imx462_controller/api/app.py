@@ -7,10 +7,11 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from ..camera.service import CameraManager
+from ..camera.service import CameraManager, CameraUnavailableError
 from ..config import AppConfig, Secrets
 from ..mqtt.client import MqttPublisher
 from ..otel.setup import setup_telemetry
@@ -63,6 +64,13 @@ def create_app(
         if path == "/" or path.endswith((".js", ".css", ".html")):
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return response
+
+    @app.exception_handler(CameraUnavailableError)
+    async def _camera_unavailable(request: Request, exc: CameraUnavailableError):
+        # Handled here (503, no traceback): the manager already logged the
+        # failure once; an unhandled exception would log a full traceback on
+        # every request for as long as the camera stays broken.
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
 
     setup_telemetry(config.otel, secrets, app=app)
 

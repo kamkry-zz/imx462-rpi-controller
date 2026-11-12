@@ -119,3 +119,36 @@
     state: absent
   loop: "{{ known_camera_overlays | difference(configured_camera_overlays) }}"
   when: not imx462_is_pi5_pisp
+
+- name: Read firmware config for the CMA size
+  slurp:
+    src: "{{ firmware_config }}"
+  register: firmware_config_content
+  when: (imx462_cma_mb | int) > 0
+
+- name: Compute the vc4-kms-v3d line with the configured CMA size
+  # Keep any other overlay parameters; replace only an existing cma-N.
+  set_fact:
+    imx462_vc4_line: >-
+      {%- set lines = (firmware_config_content.content | b64decode).splitlines()
+            | select('match', '^dtoverlay=vc4-kms-v3d(,|\s*$)') | list -%}
+      {%- if lines -%}
+      {%- set params = lines[0].split('=', 1)[1].strip().split(',')[1:]
+            | reject('match', '^cma-') | list -%}
+      {{ (['dtoverlay=vc4-kms-v3d'] + params + ['cma-' ~ (imx462_cma_mb | int)]) | join(',') }}
+      {%- endif -%}
+  when: (imx462_cma_mb | int) > 0
+
+- name: Set the CMA size on the vc4-kms-v3d overlay (low-memory boards)
+  # Only rewrites an existing vc4-kms-v3d line; never adds the KMS overlay.
+  lineinfile:
+    path: "{{ firmware_config }}"
+    regexp: '^dtoverlay=vc4-kms-v3d(,.*)?\s*$'
+    line: "{{ imx462_vc4_line }}"
+  register: imx462_cma_result
+  when: (imx462_cma_mb | int) > 0 and imx462_vc4_line | length > 0
+
+- name: Warn that the CMA change needs a reboot
+  debug:
+    msg: "CMA set to {{ imx462_cma_mb }} MB in {{ firmware_config }}; reboot this Pi to apply."
+  when: imx462_cma_result is changed
