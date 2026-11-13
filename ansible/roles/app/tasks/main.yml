@@ -7,6 +7,10 @@
       - python3-picamera2
       - python3-venv
       - prometheus-node-exporter
+      # Remuxes recordings from raw H.264 to MP4 (`ffmpeg -c copy`). Lite
+      # images (e.g. the Zero 2 W) ship without it, so recordings silently
+      # stayed as .h264.
+      - ffmpeg
     state: present
     update_cache: true
 
