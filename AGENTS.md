@@ -84,6 +84,18 @@ of truth for planning; `openspec/project.md` holds the full stack/domain context
   per request. A failing SD card can silently return bit-flipped reads
   (`dpkg --verify` mismatches, e.g. a corrupted numpy → `UnicodeDecodeError` on
   import); reflash on a new card rather than repairing.
+- **Pi 5 bootloader (EEPROM) updates must not be interrupted.**
+  `rpi-eeprom-update -a` stages the update and the flash runs on the next boot.
+  If the Pi never comes back (red LED, green LED never lit), read the SD card's
+  boot partition (FAT, readable on a Mac): `recovery.bin` renamed to
+  `RECOVERY.000` with `pieeprom.upd` still present (no `pieeprom.bak`) means the
+  flash started and did not finish. Copy `RECOVERY.000` back to `recovery.bin`,
+  reinsert the card and power on (fallback: Raspberry Pi Imager → Misc utility
+  images → Bootloader (Pi 5 family) → SD Card Boot on a spare card).
+  `raspberrypi-5-1` (bootloader 2025-05-08) failed to return from two software
+  reboots on 2026-11-12/13 and was updated to the 2026-09-25 build; whether that
+  cures the warm-reboot hang is **untested**, so power-cycle it by hand rather
+  than rebooting it from software.
 
 ## Architecture constraints
 - Camera access is via **Picamera2** in a **single process**, one instance per camera
@@ -231,6 +243,15 @@ of truth for planning; `openspec/project.md` holds the full stack/domain context
 - Deploy: `ansible-playbook -i ansible/inventory.ini ansible/playbook.yml` (SSH by
   IP, keys pre-exchanged). Inventory/host_vars are git-ignored; use the `*.example`
   files as templates.
+- **Pause cat-watcher's auto power-cycling before anything that reboots a Pi or
+  touches its firmware, bootloader or SD card.** cat-watcher (krysdom-api)
+  power-cycles a camera's Tuya socket when its snapshots stop, so a reboot that
+  takes more than a few minutes gets the power cut (it interrupted the Pi 5
+  bootloader update above). On the cat-watcher **Devices** page press
+  *Pause 30 min* on the Pi's socket (or `POST /api/power/<id>/pause` with
+  `{"minutes": 30}`; ids `u15` = raspberrypi-5-1, `u12` = raspberrypi-zero-2w-2);
+  it expires by itself. Procedure and incident notes: cat-watcher
+  `TROUBLESHOOTING.md` APP-06.
 - Frontend design: use the `ui-ux-pro-max` skill; run its search scripts with
   `python3 .opencode/skills/ui-ux-pro-max/scripts/search.py ...` (see the skill).
 
