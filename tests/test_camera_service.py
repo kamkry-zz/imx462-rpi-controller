@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -1115,3 +1116,104 @@ def test_periodic_refocus_disabled_by_default_and_for_continuous(capture_config)
 
     worker.set_focus("continuous", refocus_interval_seconds=10)
     assert worker.refocus_due(time.monotonic() + 10_000) is False
+
+
+# ── recording that cannot start (hardware H.264 encoder limits) ────────
+
+class _StartFailsPicamera2(FakePicamera2):
+    """start_encoder fails like the Pi's V4L2 H.264 encoder on an oversized frame."""
+
+    def __init__(self, camera_num=None):
+        super().__init__(camera_num)
+        self.fail_start = True
+
+    def start_encoder(self, encoder, output, name=None):
+        if self.fail_start:
+            raise ProcessLookupError(3, "No such process")
+        super().start_encoder(encoder, output, name)
+
+
+class _TrackedEncoder:
+    def __init__(self):
+        self.stopped = 0
+
+    def stop(self):
+        self.stopped += 1
+
+
+def _touching_factory(encoder):
+    """Mimic FileOutput: the raw file exists as soon as the encoder is set up."""
+    def factory(path):
+        Path(path).touch()
+        return encoder, str(path)
+    return factory
+
+
+def _h264_files(capture_config):
+    return sorted(Path(capture_config.output_dir).glob("*.h264"))
+
+
+def test_failed_recording_start_reports_cleans_up_and_recovers(capture_config):
+    fake = _StartFailsPicamera2()
+    encoder = _TrackedEncoder()
+    worker = CameraWorker(0, "cam0", fake, capture_config, encoder_factory=_touching_factory(encoder))
+    worker.configure_mode(CameraMode(width=1920, height=1080, bit_depth=12, framerate=60))
+
+    with pytest.raises(RuntimeError) as err:
+        worker.start_recording()
+    assert "Recording could not start" in str(err.value)
+    assert "No such process" in str(err.value)
+    assert err.value.__cause__ is None  # no chained traceback in the logs
+    assert worker.recording is False
+    assert encoder.stopped == 1  # picamera2 leaves a failed encoder marked running
+    assert _h264_files(capture_config) == []  # no empty file left behind
+
+    fake.fail_start = False
+    worker.start_recording()
+    assert worker.recording is True
+    assert worker.stop_recording() is not None
+
+
+@pytest.mark.parametrize("width, height, hinted", [
+    (2304, 1296, True),   # IMX708 default: 11664 macroblocks, above the 8192 limit
+    (4608, 2592, True),
+    (1920, 1080, False),  # 8160 macroblocks: fits
+    (1536, 864, False),
+])
+def test_failed_recording_start_hints_only_for_oversized_modes(capture_config, width, height, hinted):
+    worker = CameraWorker(
+        0, "cam0", _StartFailsPicamera2(), capture_config,
+        encoder_factory=_touching_factory(_TrackedEncoder()),
+    )
+    worker.configure_mode(CameraMode(width=width, height=height, bit_depth=None, framerate=30))
+    with pytest.raises(RuntimeError) as err:
+        worker.start_recording()
+    assert (f"cannot encode {width}x{height}" in str(err.value)) is hinted
+
+
+def test_failed_recording_start_when_the_encoder_factory_raises(capture_config):
+    def broken_factory(path):
+        raise OSError("no /dev/video11")
+
+    worker = CameraWorker(0, "cam0", FakePicamera2(), capture_config, encoder_factory=broken_factory)
+    worker.configure_mode(CameraMode(width=1920, height=1080, bit_depth=12, framerate=60))
+    with pytest.raises(RuntimeError, match="no /dev/video11"):
+        worker.start_recording()
+    assert worker.recording is False
+    assert _h264_files(capture_config) == []
+
+
+def test_failed_recording_start_survives_an_encoder_that_cannot_stop(capture_config):
+    """A half-initialised encoder may raise from stop(); that must not mask the real error."""
+    class BrokenStop:
+        def stop(self):
+            raise OSError("device already closed")
+
+    worker = CameraWorker(
+        0, "cam0", _StartFailsPicamera2(), capture_config,
+        encoder_factory=_touching_factory(BrokenStop()),
+    )
+    worker.configure_mode(CameraMode(width=1920, height=1080, bit_depth=12, framerate=60))
+    with pytest.raises(RuntimeError, match="No such process"):
+        worker.start_recording()
+    assert _h264_files(capture_config) == []

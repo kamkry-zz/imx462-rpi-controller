@@ -84,6 +84,12 @@ of truth for planning; `openspec/project.md` holds the full stack/domain context
   per request. A failing SD card can silently return bit-flipped reads
   (`dpkg --verify` mismatches, e.g. a corrupted numpy → `UnicodeDecodeError` on
   import); reflash on a new card rather than repairing.
+- **Hardware H.264 is limited to ~1080p** on vc4 boards (Pi 3/4/Zero 2 W): level
+  4.2 allows 8192 macroblocks/frame. The IMX708's default **2304x1296** mode
+  (11664) cannot be recorded: picamera2 fails setting the level control
+  (`0x00990a67`, `bcm2835-codec: Failed enabling i/p port`), while **1536x864@60**
+  records (verified on `raspberrypi-zero-2w-2`, `.mp4` after remux). A failed
+  start is a **409** with a hint, no traceback and no leftover file.
 - **Pi 5 bootloader (EEPROM) updates must not be interrupted.**
   `rpi-eeprom-update -a` stages the update and the flash runs on the next boot.
   If the Pi never comes back (red LED, green LED never lit), read the SD card's
