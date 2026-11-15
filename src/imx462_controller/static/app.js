@@ -323,8 +323,8 @@ function selectCamera(id) {
   updateFocusUI();
   setStreamSrc(`/api/cameras/${id}/stream?t=${Date.now()}`);
   applyMode();
-  refreshCapabilities(id);
-  loadFocusState(id);
+  void refreshCapabilities(id);
+  void loadFocusState(id);
 }
 
 async function refreshCapabilities(id) {
@@ -842,7 +842,7 @@ el.awbToggle.addEventListener("change", () => {
 });
 el.focusMode.addEventListener("change", () => {
   updateFocusUI();
-  applyFocus();
+  void applyFocus();
 });
 el.focusRange.addEventListener("change", applyFocus);
 el.focusInterval.addEventListener("change", applyFocus);

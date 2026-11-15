@@ -482,3 +482,29 @@ def test_camera_open_retries_after_backoff(tmp_path, monkeypatch, caplog):
     assert len(attempts) == 3
     # The repeated identical failure is demoted to DEBUG: one ERROR in total.
     assert len([r for r in caplog.records if r.levelname == "ERROR"]) == 1
+
+
+class _EncoderFailsPicamera2(FakePicamera2):
+    def start_encoder(self, encoder, output, name=None):
+        raise ProcessLookupError(3, "No such process")
+
+
+def test_recording_start_failure_is_409_without_traceback(tmp_path, caplog):
+    """A recording the hardware cannot start must be a clean 409, not a 500 traceback."""
+    config = AppConfig(
+        cameras=[CameraConfig(id=0, name="cam0")],
+        capture=CaptureConfig(output_dir=str(tmp_path / "media"), video_format="h264"),
+        default_mode={"width": 2304, "height": 1296, "framerate": 30},
+    )
+    app = create_app(
+        config, Secrets(), picam2_factory=_EncoderFailsPicamera2,
+        encoder_factory=lambda path: (object(), str(path)),
+    )
+    with TestClient(app, raise_server_exceptions=False) as c, caplog.at_level("DEBUG"):
+        res = c.post("/api/cameras/0/recording/start")
+        assert res.status_code == 409
+        assert "Recording could not start" in res.json()["detail"]
+        assert "cannot encode 2304x1296" in res.json()["detail"]
+        assert c.post("/api/cameras/0/photo").status_code == 200  # camera still usable
+    assert "Traceback" not in caplog.text
+    assert list((tmp_path / "media").glob("*.h264")) == []

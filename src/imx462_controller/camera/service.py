@@ -36,6 +36,17 @@ tracer = get_tracer("imx462_controller.camera")
 CAMERA_RETRY_BACKOFF_S = 30.0
 
 
+# The Pi's hardware H.264 encoder (V4L2, vc4 boards) tops out at H.264 level 4.2,
+# i.e. 8192 macroblocks (16x16 px) per frame, about 1920x1088. Larger modes (the
+# IMX708's default 2304x1296 is 11664 macroblocks) fail when picamera2 sets the
+# level control (V4L2 0x00990a67).
+H264_HW_MAX_MACROBLOCKS = 8192
+
+
+def _h264_frame_too_large(width: int, height: int) -> bool:
+    return ((width + 15) // 16) * ((height + 15) // 16) > H264_HW_MAX_MACROBLOCKS
+
+
 class CameraUnavailableError(Exception):
     """The camera could not be opened (stack import failure, absent sensor, ...).
 
@@ -1269,12 +1280,48 @@ class CameraWorker:
                 return
             self._ensure_started()
             raw_path = self._new_filename("h264")
-            encoder, output = self._encoder_factory(raw_path)
-            self._picam2.start_encoder(encoder, output, name="main")
+            encoder = None
+            try:
+                encoder, output = self._encoder_factory(raw_path)
+                self._picam2.start_encoder(encoder, output, name="main")
+            except Exception as exc:  # noqa: BLE001 - any encoder failure is "cannot record"
+                self._discard_failed_recording(encoder, raw_path)
+                message = self._recording_failure_message(exc)
+                logger.warning("Camera %s: %s", self._name, message)
+                # RuntimeError -> HTTP 409 with this message, no traceback.
+                raise RuntimeError(message) from None
             self._video_encoder = encoder
             self._recording = True
             self._recording_raw_path = raw_path
             logger.info("Recording started: %s", raw_path)
+
+    def _discard_failed_recording(self, encoder: Any, raw_path: Path) -> None:
+        """Undo a recording that failed to start.
+
+        picamera2's ``Encoder.start`` marks the encoder running and opens the
+        output file *before* the hardware setup can fail, and it does not
+        register the encoder on failure, so stop it ourselves (best effort) and
+        remove the empty file. The live-view encoder is untouched.
+        """
+        if encoder is not None:
+            try:
+                encoder.stop()
+            except Exception as exc:  # noqa: BLE001 - never mask the original failure
+                logger.debug("Camera %s: stopping the failed encoder raised: %s", self._name, exc)
+        try:
+            raw_path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.debug("Camera %s: could not remove %s: %s", self._name, raw_path, exc)
+
+    def _recording_failure_message(self, exc: Exception) -> str:
+        message = f"Recording could not start: {exc}"
+        mode = self._mode
+        if mode is not None and _h264_frame_too_large(mode.width, mode.height):
+            message += (
+                f". The hardware H.264 encoder cannot encode {mode.width}x{mode.height} "
+                "(limit about 1920x1080): switch the camera to a smaller mode and retry"
+            )
+        return message
 
     def stop_recording(self) -> Path | None:
         with self._lock, tracer.start_as_current_span("camera.stop_recording"):
