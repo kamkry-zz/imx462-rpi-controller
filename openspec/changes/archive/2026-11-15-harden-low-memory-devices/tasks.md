@@ -10,13 +10,13 @@
 - [x] 2.1 Role defaults `imx462_memory_high/max/swap_max` (40%/50%/25%) and `imx462_enable_memory_cgroup`
 - [x] 2.2 Unit template: `MemoryAccounting=yes`, `MemoryHigh`, `MemoryMax`, `MemorySwapMax`
 - [x] 2.3 Append `cgroup_enable=memory` to `cmdline.txt` idempotently; warn that a reboot is required
-- [ ] 2.4 Deploy, reboot each Pi, verify `memory` in `/sys/fs/cgroup/cgroup.controllers` and the limits via `systemctl show imx462-controller -p MemoryMax`
+- [x] 2.4 Deploy, reboot each Pi, verify `memory` in `/sys/fs/cgroup/cgroup.controllers` and the limits via `systemctl show imx462-controller -p MemoryMax` (all six Pis, 2026-11-12/15; no OOM kill in the following days)
 
 ## 3. CMA on low-memory boards
 
 - [x] 3.1 Role default `imx462_cma_mb` (192 on ≤512 MB RAM, else 0 = untouched)
 - [x] 3.2 Rewrite an existing `dtoverlay=vc4-kms-v3d` line with `cma-N`, preserving other parameters; never add the overlay; warn that a reboot is required
-- [ ] 3.3 After reboot on the Zeros, verify `CmaTotal` ≈ 192 MB and that live view, photos and a recording still work
+- [x] 3.3 After reboot on the Zeros, verify `CmaTotal` ≈ 192 MB and that live view, photos and a recording still work (both Zeros show 196608 kB; recording works at 1080p on zero-2w-1 and at 1536x864 on zero-2w-2; 2304x1296 cannot be recorded by the hardware encoder, see `recording-start-failure`)
 
 ## 4. Docs
 

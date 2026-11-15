@@ -87,3 +87,7 @@ imx462_env:
   # gives per-Pi `instance` labels in Prometheus and `host_name` labels in Loki.
   # Use this Pi's hostname/FQDN.
   OTEL_RESOURCE_ATTRIBUTES: "host.name=my-pi,service.instance.id=my-pi"
+  # Any extra variable here lands in the service's environment (.env). Example in
+  # use as an experiment (see AGENTS.md, "Trixie camera stack leaks native
+  # memory"): cap glibc malloc arenas on one host to test the leak hypothesis.
+  # MALLOC_ARENA_MAX: "2"

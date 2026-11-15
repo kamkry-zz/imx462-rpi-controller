@@ -65,8 +65,17 @@ of truth for planning; `openspec/project.md` holds the full stack/domain context
   Trixie Pi 5 (500× `capture_file`, 500× `capture_metadata`, 100× flip
   reconfigure, MJPEG encoder running) is also flat, so the growth needs the
   app's multi-threaded use of the stack (suspect: glibc malloc arena
-  fragmentation — next experiment `MALLOC_ARENA_MAX=2` on one host). Mitigated
-  by the service memory guard below; do not remove it.
+  fragmentation). **Experiment running since 2026-11-15:** `MALLOC_ARENA_MAX=2`
+  on `raspberrypi-5-2` only (set under `imx462_env` in its git-ignored
+  `host_vars`; see `host_vars/pi.example.yml`), control `raspberrypi-5-1`, same
+  hardware, cameras and load. Judge it after at least 48 h without a controller
+  restart by comparing the growth of the controller's anonymous memory (the
+  service cgroup's `memory.stat` `anon`, or host `node_memory_AnonPages_bytes`
+  plus swap used in Prometheus); an unguarded leak was ~17 MB/h on 5-2, so
+  "both flat" means the leak has not shown up yet, not that the cap works. If it
+  helps, make it a default of the app role instead of a per-host line. Mitigated
+  meanwhile by the service memory guard below; do not remove it. Alerts:
+  `pi-swap-exhausted` and `controller-oom-killed` (krysdom-api `camera-fleet`).
 - **Service memory guard**: the unit sets `MemoryHigh`/`MemoryMax`/
   `MemorySwapMax` (role defaults 40%/50%/25% of RAM) so a leak OOM-kills and
   restarts the service instead of thrashing the board. The Pi firmware passes
