@@ -98,10 +98,14 @@ of truth for planning; `openspec/project.md` holds the full stack/domain context
   flash started and did not finish. Copy `RECOVERY.000` back to `recovery.bin`,
   reinsert the card and power on (fallback: Raspberry Pi Imager → Misc utility
   images → Bootloader (Pi 5 family) → SD Card Boot on a spare card).
-  `raspberrypi-5-1` (bootloader 2025-05-08) failed to return from two software
-  reboots on 2026-11-12/13 and was updated to the 2026-09-25 build; whether that
-  cures the warm-reboot hang is **untested**, so power-cycle it by hand rather
-  than rebooting it from software.
+  `raspberrypi-5-1` (bootloader 2025-05-08) failed to return from a software
+  reboot on 2026-11-12 (cause unknown) and again on 2026-11-13 from the reboot
+  that applied the bootloader update (an automatic socket cut interrupted the
+  flash). After the update to the 2026-09-25 build it came back from **3
+  consecutive software reboots in ~25 s each** (2026-11-15, both cameras
+  working). That is encouraging, not proof (one unexplained hang beforehand):
+  pause its cat-watcher socket and stay near it for any reboot until it has
+  rebooted cleanly for a while.
 
 ## Architecture constraints
 - Camera access is via **Picamera2** in a **single process**, one instance per camera
