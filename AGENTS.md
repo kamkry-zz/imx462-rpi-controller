@@ -242,6 +242,10 @@ of truth for planning; `openspec/project.md` holds the full stack/domain context
   (0 = infinity).
 
 ## Configuration & secrets
+- **App only:** the Ansible playbook deploys the controller (overlay, packages
+  it needs, venv, config, unit). Never add host-level firewall, sshd or
+  OS-wide policy tasks here; those are owned by the separate infrastructure
+  repo, so two repos never write the same host files.
 - Non-secret values → `config.yaml`. Secrets → local `.env` (git-ignored).
 - Every configurable file must have a committed template/example
   (`config.example.yaml`, `.env.example`, Ansible inventory/host_vars examples,
