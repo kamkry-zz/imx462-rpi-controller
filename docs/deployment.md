@@ -5,6 +5,10 @@
 - Target Raspberry Pi (3/4/5, Pi Zero 2 W) running Raspberry Pi OS **Bookworm
   (Debian 12) or Trixie (Debian 13)**.
 - SSH access by IP with pre-exchanged keys (passwordless for the `pi`/service user).
+- Host-level configuration (firewall, SSH hardening, OS update policy) is **out
+  of scope** for this playbook: manage it with your infrastructure tooling. If
+  the host runs a default-deny firewall, allow TCP **8000** (web UI / API) from
+  the clients that use it (e.g. cat-watcher).
 - A reachable MQTT broker and an externally-reachable OTLP endpoint (the k3s
   collector `otel-collector.observability.svc` is cluster-internal; expose it via
   Gateway/NodePort before deploying).
